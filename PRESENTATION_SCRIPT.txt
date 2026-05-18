@@ -1,0 +1,59 @@
+Presentation Script (approx. 8-10 minutes)
+
+Good [morning/afternoon] everyone.
+
+Today I will explain our Samsung PRISM project in a very simple way: what problem we are solving, what existing research does, what gaps we found, how our method is different, and how much improvement we are targeting.
+
+First, the problem.
+Small language models are efficient and cheaper to run, but they often struggle in multi-step reasoning, such as math word problems and logic tasks. If the model makes an error in step 1 or step 2, the final answer is usually wrong.
+
+Now, what do standard methods do?
+Chain-of-Thought asks the model to reason step by step. Self-Consistency generates many chains and takes majority vote. Tree-of-Thought explores branches. Combinatorial Reasoning and QCR-LLM use optimization approaches.
+
+These are strong methods, but they still have practical shortcomings for our target.
+Some need very large models. Some are expensive because they sample too many paths. Some rely on voting, which can still select common but wrong answers. QUBO-based methods in prior work are mostly tested on larger models and larger optimization size, and quantum-first methods can depend on special hardware.
+
+So what did we do differently?
+Our approach is a three-stage pipeline:
+
+Stage 1: Sampling.
+We generate multiple reasoning candidates with diversity controls, so we do not get near-duplicate reasoning.
+
+Stage 2: QUBO optimization.
+We convert candidate reasons into an optimization problem. The solver selects a subset that is both relevant and non-redundant.
+
+Stage 3: Final inference.
+We feed only the selected best reasons back to the model and get the final answer.
+
+The key novelty is this:
+We added correctness-aware scoring before QUBO selection. Earlier methods mostly use similarity and redundancy. We additionally score whether a reason is likely correct, for example with rule-based checking for math and lightweight NLI for commonsense. This reduces hallucinated reasoning entering the final selection.
+
+Our second major improvement:
+We adapt QUBO specifically for 3B-class small models by semantic clustering, reducing variable count from around 900 in prior large-model settings to around 100 to 200. This makes the approach practical on CPU and A100.
+
+Third improvement:
+We include QUBO-based hyperparameter search, which jointly tunes settings like temperature and sample counts, instead of slow manual or grid tuning.
+
+Fourth and future-facing improvement:
+We plan HUBO and optimized annealing schedules, plus a QUBO-guided fine-tuning loop so the model itself learns from high-quality selected traces.
+
+Now, the expected impact.
+From our roadmap, projected GSM8K progression is roughly:
+60 percent baseline,
+66 with CoT,
+72 with diverse sampling,
+78 with QUBO selection,
+84 after correctness-aware verifier,
+88 after QUBO-guided fine-tuning,
+and about 91 with optimized annealing plus HUBO.
+
+So overall, the projected gain is about plus 31 points from baseline, and this exceeds our defined 2x target trajectory.
+
+Why is this useful in practice?
+Because we are trying to get near large-model reasoning quality while staying in a small-model deployment budget. That means lower cost and better deployability, without giving up too much reasoning accuracy.
+
+To conclude:
+Our work stands at the intersection of AI reasoning and combinatorial optimization.
+Compared to the papers, our contribution is not just using QUBO, but making it SLM-ready, correctness-aware, and deployment-oriented.
+
+Thank you. I am happy to take questions.

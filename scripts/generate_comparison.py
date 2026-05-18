@@ -23,6 +23,8 @@ QUESTIONS = [
     "All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?",
 ]
 
+FAST_MODE_QUESTION_LIMIT = 2
+
 K_SELECTED = 6
 
 
@@ -196,7 +198,7 @@ def main():
             "avg_redundancy", "avg_relevance", "runtime_s"
         ])
 
-        for q_idx, question in enumerate(QUESTIONS, 1):
+        for q_idx, question in enumerate(QUESTIONS[:FAST_MODE_QUESTION_LIMIT], 1):
             print(f"\n{'='*60}")
             print(f"Query {q_idx}: {question[:60]}...")
             print(f"{'='*60}")

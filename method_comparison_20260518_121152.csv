@@ -1,0 +1,43 @@
+query_idx,query,method_code,method_name,k_selected,selected_indices,common_qubo_energy,avg_redundancy,avg_relevance,runtime_s
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",BASE,Textbook QUBO (yours),6,1;4;6;9;10;11,48.1640,0.8527,1.0000,0.9728
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[5],Self-Consistency,6,0;1;2;3;4;5,43.3965,0.7163,0.4300,0.0000
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[6],Tree-of-Thoughts,6,7;2;10;0;5;12,40.1199,0.6621,0.4340,0.0000
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[7],Ranked-Voting SC,6,19;18;17;16;15;14,52.2744,0.8613,0.4006,0.0001
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[8],Combinatorial Reasoning,6,1;10;0;7;6;19,37.2925,0.6294,0.5791,0.0004
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[9],QCR-LLM (HUBO),6,18;16;13;12;9;1,49.9396,0.8823,1.0000,0.0001
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[10],DQO bias-field,6,13;1;4;6;9;10,48.6332,0.8606,1.0000,1.0132
+2,"A train travels 120 km in 2 hours. If it speeds up by 20 km/h, what is the new speed?",BASE,Textbook QUBO (yours),6,0;1;2;3;4;5,55.3367,0.9023,0.3000,0.8273
+2,"A train travels 120 km in 2 hours. If it speeds up by 20 km/h, what is the new speed?",[5],Self-Consistency,6,0;1;2;3;4;5,55.3367,0.9023,0.3000,0.0000
+2,"A train travels 120 km in 2 hours. If it speeds up by 20 km/h, what is the new speed?",[6],Tree-of-Thoughts,6,7;12;4;16;6;8,46.4135,0.7536,0.3000,0.0001
+2,"A train travels 120 km in 2 hours. If it speeds up by 20 km/h, what is the new speed?",[7],Ranked-Voting SC,6,19;18;17;16;15;14,51.1538,0.8326,0.3000,0.0003
+2,"A train travels 120 km in 2 hours. If it speeds up by 20 km/h, what is the new speed?",[8],Combinatorial Reasoning,6,0;8;7;6;19;10,44.4838,0.7214,0.3000,0.0005
+2,"A train travels 120 km in 2 hours. If it speeds up by 20 km/h, what is the new speed?",[9],QCR-LLM (HUBO),6,19;18;17;16;15;14,51.1538,0.8326,0.3000,0.0000
+2,"A train travels 120 km in 2 hours. If it speeds up by 20 km/h, what is the new speed?",[10],DQO bias-field,6,10;2;0;1;3;4,55.2143,0.9002,0.3000,0.7826
+3,A rectangle has perimeter 36 cm and its length is twice its width. Find its area.,BASE,Textbook QUBO (yours),6,5;0;1;2;3;4,53.2512,0.8792,0.4167,0.7643
+3,A rectangle has perimeter 36 cm and its length is twice its width. Find its area.,[5],Self-Consistency,6,0;1;2;3;4;5,53.2512,0.8792,0.4167,0.0000
+3,A rectangle has perimeter 36 cm and its length is twice its width. Find its area.,[6],Tree-of-Thoughts,6,7;19;11;0;5;10,51.1064,0.8389,0.3716,0.0001
+3,A rectangle has perimeter 36 cm and its length is twice its width. Find its area.,[7],Ranked-Voting SC,6,19;18;17;16;15;14,54.4526,0.8875,0.3000,0.0001
+3,A rectangle has perimeter 36 cm and its length is twice its width. Find its area.,[8],Combinatorial Reasoning,6,5;14;15;3;17;2,49.1942,0.8116,0.4167,0.0003
+3,A rectangle has perimeter 36 cm and its length is twice its width. Find its area.,[9],QCR-LLM (HUBO),6,5;19;17;18;16;15,53.3410,0.8807,0.4167,0.0000
+3,A rectangle has perimeter 36 cm and its length is twice its width. Find its area.,[10],DQO bias-field,6,5;8;9;0;1;2,52.3827,0.8647,0.4167,0.7275
+4,Solve for z: 3z - 7 = 2z + 5.,BASE,Textbook QUBO (yours),6,1;7;10;12;14;16,49.4312,0.8072,0.3333,0.7810
+4,Solve for z: 3z - 7 = 2z + 5.,[5],Self-Consistency,6,0;1;2;3;4;5,46.8659,0.7474,0.1633,0.0000
+4,Solve for z: 3z - 7 = 2z + 5.,[6],Tree-of-Thoughts,6,7;12;2;19;4;6,45.8454,0.7336,0.1952,0.0001
+4,Solve for z: 3z - 7 = 2z + 5.,[7],Ranked-Voting SC,6,19;18;17;16;15;14,44.8849,0.7231,0.2500,0.0001
+4,Solve for z: 3z - 7 = 2z + 5.,[8],Combinatorial Reasoning,6,1;15;7;2;8;0,38.2899,0.6091,0.2096,0.0004
+4,Solve for z: 3z - 7 = 2z + 5.,[9],QCR-LLM (HUBO),6,18;16;12;14;1;7,49.5143,0.8086,0.3333,0.0000
+4,Solve for z: 3z - 7 = 2z + 5.,[10],DQO bias-field,6,1;7;10;12;14;16,49.4312,0.8072,0.3333,0.7675
+5,"A shop sells apples for $0.50 each and oranges for $0.75 each. If John buys 4 apples and 3 oranges, how much does he pay?",BASE,Textbook QUBO (yours),6,19;0;1;2;3;4,50.2735,0.8879,1.0000,0.7740
+5,"A shop sells apples for $0.50 each and oranges for $0.75 each. If John buys 4 apples and 3 oranges, how much does he pay?",[5],Self-Consistency,6,0;1;2;3;4;5,51.2591,0.8927,0.8833,0.0000
+5,"A shop sells apples for $0.50 each and oranges for $0.75 each. If John buys 4 apples and 3 oranges, how much does he pay?",[6],Tree-of-Thoughts,6,7;15;17;13;3;8,45.0572,0.7543,0.5333,0.0000
+5,"A shop sells apples for $0.50 each and oranges for $0.75 each. If John buys 4 apples and 3 oranges, how much does he pay?",[7],Ranked-Voting SC,6,19;18;17;16;15;14,47.9905,0.8148,0.6500,0.0001
+5,"A shop sells apples for $0.50 each and oranges for $0.75 each. If John buys 4 apples and 3 oranges, how much does he pay?",[8],Combinatorial Reasoning,6,0;16;19;8;3;7,42.1556,0.7293,0.7667,0.0003
+5,"A shop sells apples for $0.50 each and oranges for $0.75 each. If John buys 4 apples and 3 oranges, how much does he pay?",[9],QCR-LLM (HUBO),6,19;17;16;3;4;2,45.2183,0.8036,1.0000,0.0000
+5,"A shop sells apples for $0.50 each and oranges for $0.75 each. If John buys 4 apples and 3 oranges, how much does he pay?",[10],DQO bias-field,6,3;0;1;2;4;16,47.7616,0.8460,1.0000,0.8843
+6,All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?,BASE,Textbook QUBO (yours),6,3;0;1;2;4;5,46.7902,0.7632,0.3333,3.5006
+6,All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?,[5],Self-Consistency,6,0;1;2;3;4;5,46.7902,0.7632,0.3333,0.0000
+6,All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?,[6],Tree-of-Thoughts,6,7;12;1;14;4;13,47.4131,0.7702,0.3000,0.0000
+6,All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?,[7],Ranked-Voting SC,6,19;18;17;16;15;14,48.6227,0.7904,0.3000,0.0001
+6,All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?,[8],Combinatorial Reasoning,6,3;1;14;2;18;15,43.1416,0.7024,0.3333,0.0010
+6,All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?,[9],QCR-LLM (HUBO),6,3;19;17;18;16;15,48.7324,0.7955,0.3333,0.0001
+6,All cats are mammals. Some mammals are predators. Can we conclude all cats are predators?,[10],DQO bias-field,6,3;10;0;1;2;4,46.9874,0.7665,0.3333,3.4384
