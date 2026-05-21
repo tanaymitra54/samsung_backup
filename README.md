@@ -636,8 +636,4 @@ If you use this project in reports or demos, cite as:
 }
 ```
 
----
 
-## 19) License
-
-This repository currently uses project-specific internal governance. Add a `LICENSE` file (for example MIT/Apache-2.0) before public open-source release.
