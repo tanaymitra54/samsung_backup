@@ -1,5 +1,5 @@
 model:
-  name: "Qwen/Qwen2.5-1.5B-Instruct"
+  name: "deepseek-ai/deepseek-coder-1.5b-instruct"
   cache_dir: "./cache/models"
 
 pipeline:
