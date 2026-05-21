@@ -2,13 +2,20 @@ import argparse
 import csv
 import json
 import os
+import random
 import sys
 import time
 from datetime import datetime
 
+import numpy as np
+import torch
+import yaml
+from tqdm import tqdm
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from evaluation import BenchmarkRunner
+from evaluation.answer_utils import extract_predicted_answer, is_correct_prediction
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
@@ -28,6 +35,8 @@ def parse_args():
                         help="Directory for output files")
     parser.add_argument("--benchmarks", nargs="*", default=None,
                         help="Specific benchmarks to run (default: all in config)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducible runs")
     return parser.parse_args()
 
 
@@ -40,6 +49,28 @@ TASK_TYPE = {
 }
 
 IS_MCQ = {"mmlu", "arc_challenge"}
+
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def extract_mcq_choice(text: str) -> str:
+    if not text:
+        return ""
+    upper = text.strip().upper()
+    import re
+    direct = re.search(r"\b([A-D])\b", upper)
+    if direct:
+        return direct.group(1)
+    tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-D])\b", upper)
+    if tagged:
+        return tagged.group(1)
+    return ""
 
 
 def baseline_greedy(inference: InferencePipeline, question: str) -> str:
@@ -80,7 +111,6 @@ def extract_answer(pred: str, benchmark: str) -> str:
     if not pred:
         return ""
     if benchmark == "gsm8k":
-        from evaluation.answer_utils import extract_predicted_answer
         return extract_predicted_answer(pred)
     return pred.strip()
 
@@ -89,12 +119,9 @@ def is_correct(pred: str, gold: str, benchmark: str) -> bool:
     if not pred:
         return False
     if benchmark in IS_MCQ:
-        from evaluation import BenchmarkRunner
-        runner = BenchmarkRunner.__new__(BenchmarkRunner)
-        extracted = runner._extract_mcq_choice(pred)
+        extracted = extract_mcq_choice(pred)
         return bool(extracted and extracted == gold.strip().upper())
     if benchmark == "gsm8k":
-        from evaluation.answer_utils import is_correct_prediction
         return is_correct_prediction(pred, gold)
     return pred.strip().lower() == gold.strip().lower() or gold.strip().lower() in pred.strip().lower()
 
@@ -153,6 +180,7 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
 
 def main():
     args = parse_args()
+    set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -163,6 +191,11 @@ def main():
         runner.full_eval = True
 
     benchmark_list = args.benchmarks if args.benchmarks else runner.benchmarks
+    unknown = [b for b in benchmark_list if b not in runner.benchmarks]
+    if unknown:
+        raise ValueError(
+            f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}"
+        )
 
     sampler = DiverseSampler()
     verifier = ReasonVerifier()
@@ -170,56 +203,101 @@ def main():
     solver = SimulatedAnnealingSolver()
     inference = InferencePipeline()
 
-    all_rows = {b: [] for b in benchmark_list}
     summary = {}
+
+    csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
+    fieldnames = [
+        "benchmark", "id", "question", "gold", "pred_greedy", "pred_cot",
+        "pred_qubo", "correct_greedy", "correct_cot", "correct_qubo",
+        "runtime_greedy_s", "runtime_cot_s", "runtime_qubo_s", "error",
+    ]
+    csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+    writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    writer.writeheader()
 
     for b in benchmark_list:
         print(f"\n{'='*60}")
         print(f"Benchmark: {b}")
         print(f"{'='*60}")
 
-        questions, gold_answers = runner.load_benchmark(b)
+        try:
+            questions, gold_answers = runner.load_benchmark(b)
+        except Exception as e:
+            print(f"  Failed to load benchmark {b}: {e}")
+            summary[b] = {"error": str(e), "num_samples": 0}
+            continue
+
         task_type = TASK_TYPE.get(b, "math")
         print(f"  Loaded {len(questions)} questions")
+        correct_greedy = 0
+        correct_cot = 0
+        correct_qubo = 0
+        total = 0
+        failed = 0
 
-        for idx, (q, gold) in enumerate(zip(questions, gold_answers)):
-            t0 = time.time()
-            pred_greedy = baseline_greedy(inference, q)
-            t1 = time.time()
-            pred_cot = baseline_cot(inference, q)
-            t2 = time.time()
-            pred_qubo = run_qubo_pipeline(
-                sampler, verifier, qubo_builder, solver, inference, q, task_type
-            )
-            t3 = time.time()
+        for idx, (q, gold) in enumerate(tqdm(list(zip(questions, gold_answers)), desc=f"{b}", leave=False)):
+            try:
+                t0 = time.time()
+                pred_greedy = baseline_greedy(inference, q)
+                t1 = time.time()
+                pred_cot = baseline_cot(inference, q)
+                t2 = time.time()
+                pred_qubo = run_qubo_pipeline(
+                    sampler, verifier, qubo_builder, solver, inference, q, task_type
+                )
+                t3 = time.time()
 
-            pred_greedy_n = extract_answer(pred_greedy, b)
-            pred_cot_n = extract_answer(pred_cot, b)
-            pred_qubo_n = extract_answer(pred_qubo, b)
+                pred_greedy_n = extract_answer(pred_greedy, b)
+                pred_cot_n = extract_answer(pred_cot, b)
+                pred_qubo_n = extract_answer(pred_qubo, b)
 
-            row = {
-                "id": idx,
-                "question": q,
-                "gold": gold,
-                "pred_greedy": pred_greedy_n,
-                "pred_cot": pred_cot_n,
-                "pred_qubo": pred_qubo_n,
-                "correct_greedy": int(is_correct(pred_greedy_n, gold, b)),
-                "correct_cot": int(is_correct(pred_cot_n, gold, b)),
-                "correct_qubo": int(is_correct(pred_qubo_n, gold, b)),
-                "runtime_greedy_s": round(t1 - t0, 4),
-                "runtime_cot_s": round(t2 - t1, 4),
-                "runtime_qubo_s": round(t3 - t2, 4),
-            }
-            all_rows[b].append(row)
+                c_g = int(is_correct(pred_greedy_n, gold, b))
+                c_c = int(is_correct(pred_cot_n, gold, b))
+                c_q = int(is_correct(pred_qubo_n, gold, b))
+                correct_greedy += c_g
+                correct_cot += c_c
+                correct_qubo += c_q
+                total += 1
 
-            if (idx + 1) % 10 == 0:
-                print(f"  [{b}] Processed {idx + 1}/{len(questions)}")
+                row = {
+                    "benchmark": b,
+                    "id": idx,
+                    "question": q,
+                    "gold": gold,
+                    "pred_greedy": pred_greedy_n,
+                    "pred_cot": pred_cot_n,
+                    "pred_qubo": pred_qubo_n,
+                    "correct_greedy": c_g,
+                    "correct_cot": c_c,
+                    "correct_qubo": c_q,
+                    "runtime_greedy_s": round(t1 - t0, 4),
+                    "runtime_cot_s": round(t2 - t1, 4),
+                    "runtime_qubo_s": round(t3 - t2, 4),
+                    "error": "",
+                }
+            except Exception as e:
+                failed += 1
+                row = {
+                    "benchmark": b,
+                    "id": idx,
+                    "question": q,
+                    "gold": gold,
+                    "pred_greedy": "",
+                    "pred_cot": "",
+                    "pred_qubo": "",
+                    "correct_greedy": 0,
+                    "correct_cot": 0,
+                    "correct_qubo": 0,
+                    "runtime_greedy_s": 0.0,
+                    "runtime_cot_s": 0.0,
+                    "runtime_qubo_s": 0.0,
+                    "error": str(e),
+                }
+            writer.writerow(row)
 
-        total = len(all_rows[b])
-        acc_greedy = sum(r["correct_greedy"] for r in all_rows[b]) / total if total else 0.0
-        acc_cot = sum(r["correct_cot"] for r in all_rows[b]) / total if total else 0.0
-        acc_qubo = sum(r["correct_qubo"] for r in all_rows[b]) / total if total else 0.0
+        acc_greedy = (correct_greedy / total) if total else 0.0
+        acc_cot = (correct_cot / total) if total else 0.0
+        acc_qubo = (correct_qubo / total) if total else 0.0
 
         summary[b] = {
             "accuracy": {
@@ -228,28 +306,27 @@ def main():
                 "qubo": acc_qubo,
             },
             "num_samples": total,
+            "failed_samples": failed,
             "abs_gain_vs_greedy": acc_qubo - acc_greedy,
             "cot_gain_over_greedy": acc_cot - acc_greedy,
         }
 
         print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
 
-    csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        fieldnames = [
-            "benchmark", "id", "question", "gold", "pred_greedy", "pred_cot",
-            "pred_qubo", "correct_greedy", "correct_cot", "correct_qubo",
-            "runtime_greedy_s", "runtime_cot_s", "runtime_qubo_s",
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for b in benchmark_list:
-            for row in all_rows[b]:
-                row["benchmark"] = b
-                writer.writerow(row)
+    csv_file.close()
 
     json_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.json")
-    write_summary_json(json_path, summary)
+    with open("config/config.yaml", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    summary_meta = {
+        "timestamp": timestamp,
+        "seed": args.seed,
+        "benchmarks": benchmark_list,
+        "model": cfg.get("model", {}).get("name", "unknown"),
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "results": summary,
+    }
+    write_summary_json(json_path, summary_meta)
 
     md_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.md")
     write_summary_markdown(md_path, summary, benchmark_list)
