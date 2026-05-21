@@ -1,7 +1,11 @@
-import sys
+import argparse
 import os
+import random
+import sys
 import time
 import yaml
+import numpy as np
+import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,7 +38,25 @@ def is_correct(prediction: str, valid_answers: list[str]) -> bool:
     return False
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run quick local accuracy harness")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output", default=None, help="Optional CSV output path")
+    return parser.parse_args()
+
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def main():
+    args = parse_args()
+    set_seed(args.seed)
+
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_path = os.path.join(repo_root, "config", "config.yaml")
     with open(config_path) as f:
@@ -52,39 +74,47 @@ def main():
 
     correct = 0
     total = len(QUESTIONS_WITH_ANSWERS)
+    rows = []
 
     for q_idx, (question, valid_answers) in enumerate(QUESTIONS_WITH_ANSWERS, 1):
         print(f"\n{'='*60}")
         print(f"Q{q_idx}: {question[:70]}...")
 
         t_start = time.time()
+        prediction = ""
+        verdict = False
+        energy = 0.0
+        error = ""
 
-        print("  Sampling...")
-        samples = sampler.sample(question)
-        if not samples:
-            print(f"  WARNING: No samples, skipping")
-            continue
-        print(f"  {len(samples)} samples generated")
+        try:
+            print("  Sampling...")
+            samples = sampler.sample(question)
+            if not samples:
+                raise RuntimeError("No samples generated")
+            print(f"  {len(samples)} samples generated")
 
-        print("  Verifying...")
-        samples = verifier.score_batch(samples, task_type="math")
+            print("  Verifying...")
+            samples = verifier.score_batch(samples, task_type="math")
 
-        print("  Building QUBO...")
-        Q, qubo_var_indices = qubo_builder.build_qubo(samples)
-        print(f"  QUBO: {Q.shape[0]}x{Q.shape[0]}")
+            print("  Building QUBO...")
+            Q, qubo_var_indices = qubo_builder.build_qubo(samples)
+            print(f"  QUBO: {Q.shape[0]}x{Q.shape[0]}")
 
-        print("  Solving QUBO...")
-        state, energy = solver.solve(Q)
-        selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
-        if len(selected_indices) < 1:
-            selected_indices = [0]
-        print(f"  Selected {len(selected_indices)} reasons, energy={energy:.4f}")
+            print("  Solving QUBO...")
+            state, energy = solver.solve(Q)
+            selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
+            if len(selected_indices) < 1:
+                selected_indices = [0]
+            print(f"  Selected {len(selected_indices)} reasons, energy={energy:.4f}")
 
-        print("  Generating final answer...")
-        prediction = inference.run(question, selected_indices, samples)
-        print(f"  Prediction: {prediction}")
+            print("  Generating final answer...")
+            prediction = inference.run(question, selected_indices, samples)
+            print(f"  Prediction: {prediction}")
+            verdict = is_correct(prediction, valid_answers)
+        except Exception as e:
+            error = str(e)
+            print(f"  ERROR: {error}")
 
-        verdict = is_correct(prediction, valid_answers)
         elapsed = time.time() - t_start
 
         if verdict:
@@ -94,8 +124,29 @@ def main():
             expected = valid_answers[0]
             print(f"  WRONG ({elapsed:.1f}s) — expected: {expected}")
 
+        rows.append({
+            "id": q_idx,
+            "question": question,
+            "prediction": prediction,
+            "expected": valid_answers[0],
+            "correct": int(verdict),
+            "energy": round(energy, 4),
+            "runtime_s": round(elapsed, 3),
+            "error": error,
+        })
+
     print(f"\n{'='*60}")
     print(f"Accuracy: {correct}/{total} = {100*correct/total:.1f}%")
+
+    if args.output:
+        import csv
+        with open(args.output, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [
+                "id", "question", "prediction", "expected", "correct", "energy", "runtime_s", "error"
+            ])
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"Wrote: {args.output}")
 
 
 if __name__ == "__main__":

@@ -13,23 +13,43 @@
 
 ## 1) Executive Summary
 
-This project implements a **quantum-inspired inference-time reasoning system** for small language models (SLMs). Instead of trusting a single generated chain of thought, the pipeline:
+This project makes small language models (SLMs) **reason better** by generating many possible answers, picking the best ones using smart math, and combining them into a final response. Instead of trusting a single chain of thought, the pipeline:
 
-1. samples many diverse candidate reasoning paths,
-2. verifies and scores candidate quality,
-3. builds a QUBO objective balancing correctness and diversity,
-4. solves the optimization via simulated annealing,
-5. synthesizes a final answer from selected traces.
+1. Generates many diverse candidate reasoning paths
+2. Scores each path for correctness
+3. Selects the best subset using **QUBO optimization** (a way to solve "pick the best combination" problems)
+4. Composes the final answer from selected traces
+
+### How it works (in plain English)
+
+Think of it like asking a group of experts to solve a puzzle:
+
+| Step | What the code does | Everyday analogy |
+|------|-------------------|------------------|
+| 1. **Sample** | Generate many different solution attempts | Ask 20 people to solve it their own way |
+| 2. **Verify** | Score each attempt for correctness | Check whose answers make sense |
+| 3. **Select** | Pick the best non-redundant subset | Choose the 5 best answers that aren't just copies of each other |
+| 4. **Answer** | Compose final response from selected traces | Synthesize the final answer from those 5 |
+
+### What is QUBO?
+
+QUBO (**Q**uadratic **U**nconstrained **B**inary **O**ptimization) is a mathematical framework for problems where you need to choose which items to keep and which to discard. It's like a checklist where:
+
+- ✅ Picking a good reason **reduces** your total "cost" (negative score)
+- ❌ Picking two similar reasons **increases** your cost (they're redundant)
+- The solver finds the combination that minimizes total cost
+
+We use **Simulated Annealing** to solve the QUBO — it's inspired by how metals cool slowly to form strong crystals, randomly trying different combinations and gradually settling on the best one.
 
 ### Why this matters
-- Standard decoding is brittle for multi-step reasoning.
-- Majority-vote style methods improve robustness but can remain redundant.
-- Optimization-aware trace selection introduces a principled way to trade off **quality vs diversity**.
+- Standard decoding is brittle for multi-step reasoning
+- Majority-vote methods improve robustness but keep redundant answers
+- QUBO-based selection trades off **quality vs diversity** in a principled way
 
 ### Core novelty
-- Treats reasoning-trace selection as an explicit combinatorial optimization problem.
-- Integrates lightweight verifier scores and semantic similarity penalties into a unified QUBO matrix.
-- Supports benchmark-oriented evaluation workflows (GSM8K, BBH, StrategyQA, ARC-Challenge, MMLU).
+- Treats reasoning-trace selection as an explicit combinatorial optimization
+- Integrates lightweight verifier scores and semantic similarity penalties into a unified QUBO matrix
+- Supports benchmark-oriented evaluation (GSM8K, BBH, StrategyQA, ARC-Challenge, MMLU)
 
 ---
 
@@ -199,23 +219,47 @@ classDiagram
 ## 5) End-to-End Workflow
 
 ### Step-by-step processing
-1. **Input question** enters sampling stage.
-2. **Prompt perturbations** create diverse generation contexts.
-3. **Candidate reasons/answers** are parsed from model output.
-4. **Verifier scoring** estimates correctness confidence.
-5. **Embedding + clustering** reduce redundancy and control variable count.
-6. **QUBO matrix** encodes quality/diversity tradeoff.
-7. **Annealing solver** finds low-energy binary selection state.
-8. **Reason ranking** by semantic relevance to question.
-9. **Final prompt composition** from selected traces.
-10. **Final answer generation** returned.
+
+```mermaid
+flowchart LR
+    subgraph "1. Generate"
+        A[Question] --> B[4 prompt variations]
+        B --> C[8-16 candidate answers]
+    end
+    subgraph "2. Score"
+        C --> D[Check arithmetic consistency]
+        C --> E[OR check NLI entailment]
+        D --> F[Each candidate gets a score 0-1]
+        E --> F
+    end
+    subgraph "3. Select"
+        F --> G[Embed reasons into vectors]
+        G --> H[Cluster similar reasons]
+        H --> I[Pick best per cluster]
+        I --> J[Build QUBO matrix]
+        J --> K[Simulated annealing]
+        K --> L[Optimal subset chosen]
+    end
+    subgraph "4. Answer"
+        L --> M[Re-rank by relevance]
+        M --> N[Build final prompt]
+        N --> O[Generate final answer]
+    end
+```
+
+| Step | What happens | Why it matters |
+|------|-------------|----------------|
+| **1. Generate** | Question is rewritten 4 ways (e.g., "Let's solve step by step..."). Each variation generates 2-4 answers at different temperatures (0.3 to 0.9). | One answer might miss the mark; 16 diverse attempts cover more ground. |
+| **2. Score** | For math: extracts numbers and operations, checks arithmetic consistency. For commonsense: uses an NLI model to check if the reason supports the answer. | Filters out nonsense and hallucinated steps early. |
+| **3. Select** | Reasons are embedded, clustered, and the best per cluster is picked. A QUBO matrix is built where: diagonal = quality bonus, off-diagonal = redundancy penalty. Solved via simulated annealing. | Finds the small, high-quality, non-redundant subset — unlike naive top-K which picks redundant answers. |
+| **4. Answer** | Selected reasons are re-ranked by relevance to the question. A prompt is built: "Here are some reasoning steps: {reasons}. Based on these, answer: {question}". Final answer generated greedily. | The model sees the best curated reasoning before answering, improving accuracy. |
 
 ### Decision logic
 
 ```mermaid
 flowchart TD
     A[Generate samples] --> B{Any samples?}
-    B -- No --> C[Return empty answer fallback]
+    B -- No --> C[Return empty answer]
     B -- Yes --> D[Score + build QUBO]
     D --> E[Solve QUBO]
     E --> F{Selected indices empty?}
@@ -245,57 +289,77 @@ stateDiagram-v2
 ## 6) Technical Deep Dive
 
 ### `pipeline/sampling.py` - DiverseSampler
-- **Purpose:** Generate varied reasoning candidates.
-- **Design choices:** multiple prompt templates + random temperatures.
-- **Output schema:** `{reason, answer, diversity_score, temperature, prompt_template}`.
-- **Tradeoff:** diversity improves coverage but increases inference cost.
+**In short:** Ask the same question in many different ways at different "creativity" levels.
+
+- **How:** 4 prompt templates (e.g., "Let's solve step by step") × random temperatures (0.3-0.9) = 8-16 diverse answers
+- **Output:** `{reason, answer, diversity_score, temperature, prompt_template}`
+- **Tradeoff:** more diversity → better coverage → slower inference
 
 ### `pipeline/verifier.py` - ReasonVerifier
-- **Purpose:** Assign quality estimates to generated traces.
-- **Math mode:** extracts arithmetic expressions and checks consistency.
-- **Commonsense mode:** NLI entailment score via cross-encoder.
-- **Tradeoff:** lightweight heuristics are fast, but not equivalent to symbolic proof checking.
+**In short:** Grade each answer. Math answers get checked for arithmetic consistency; commonsense answers get checked via NLI.
+
+- **Math mode:** Extracts numbers and operations via regex `(\d+\.?\d*)\s*([+\-*/])\s*(\d+\.?\d*)`, computes results, checks if consecutive computations agree
+- **Commonsense mode:** Uses `cross-encoder/nli-distilroberta-base` to measure if the reason entails the answer
+- **Tradeoff:** heuristics are fast but not as accurate as symbolic proof checking
 
 ### `pipeline/qubo_builder.py` - QUBOBuilder
-- **Purpose:** Convert scored traces into optimization objective.
-- **Diagonal terms:** favor high correctness (negative energy reward).
-- **Off-diagonal terms:** penalize semantic similarity to encourage diversity.
-- **Complexity:** similarity matrix is quadratic in selected variable count.
+**In short:** Convert scored traces into a "pick the best combination" math problem.
+
+1. **Embed** all reasons using SentenceTransformer (`all-MiniLM-L6-v2`)
+2. **Cluster** semantically similar reasons (KMeans, up to 50 clusters)
+3. **Pick the best** reason from each cluster (highest correctness score)
+4. **Build Q matrix:** diagonal = quality reward, off-diagonal = pairwise similarity penalty
+5. **Cap** at 200 variables (from ~900 raw samples) — makes it solvable on CPU
 
 ### `pipeline/solver.py` - SimulatedAnnealingSolver
-- **Purpose:** Approximate low-energy binary assignment.
-- **Method:** iterative bit flips with Metropolis acceptance.
-- **Configuration:** initial/final temperature, cooling rate, iterations, num reads.
-- **Tradeoff:** no global optimality guarantee; practical and hardware-light.
+**In short:** Solve the "pick the best combination" problem by randomly flipping choices and gradually settling on the best solution.
+
+- **Method:** Start with random selection, flip one bit at a time, accept better combinations, sometimes accept worse ones (to escape local minima)
+- **Config:** 2 independent runs × 500 iterations each, temperature 100→0.01
+- **Tradeoff:** no guarantee of optimal solution, but fast and CPU-friendly
 
 ### `pipeline/inference.py` - InferencePipeline
-- **Purpose:** turn selected reasons into final answer.
-- **Logic:** rank selected reasons by embedding relevance, build final prompt, decode deterministically.
-- **Tradeoff:** prompt length vs context quality.
+**In short:** Take the selected reasons, sort them by relevance, and ask the model for the final answer.
+
+- **Logic:** Re-rank selected reasons by cosine similarity to the question, build prompt with top K (default 6), generate answer greedily (deterministic, no randomness)
+- **Tradeoff:** more reasons = richer context = longer prompts (diminishing returns)
 
 ### `evaluation/__init__.py` - BenchmarkRunner
-- **Purpose:** unified benchmark loading and scoring.
-- **Benchmarks:** GSM8K, BBH, StrategyQA, ARC-Challenge, MMLU.
-- **Scoring modes:** relaxed text-match for open responses; strict MCQ extraction for A/B/C/D tasks.
+**In short:** Test the pipeline across 5 different benchmarks and report accuracy.
+
+- **Benchmarks:** GSM8K (math), BBH (reasoning), StrategyQA (commonsense), ARC-Challenge (science MCQ), MMLU (STEM MCQ)
+- **Scoring:** Text match for open answers, letter extraction (A/B/C/D regex) for MCQ
+- **Output:** CSV (per-question), JSON (summary), Markdown (report)
 
 ---
 
 ## 7) Algorithms and Methodology
 
 ### 7.1 Objective formulation
-Given binary selection vector `x in {0,1}^n` and QUBO matrix `Q`, optimize:
+
+We want to select a subset of reasoning traces that are **individually correct** and **collectively diverse**.
+
+**The idea in one line:** Give each reason a score, penalize pairs that are too similar, then find the combination with the best total score.
+
+#### Mathematical formulation
+
+Given binary selection vector `x ∈ {0,1}^n` (1 = keep this reason, 0 = discard) and QUBO matrix `Q`:
 
 `min E(x) = x^T Q x`
 
-Where:
-- `Q_ii` captures quality reward (higher correctness -> lower diagonal energy).
-- `Q_ij` captures pairwise redundancy penalty via cosine similarity.
+| Term | What it means | How it's computed |
+|------|--------------|-------------------|
+| `Q_ii` (diagonal) | Quality reward for reason i | `-correctness_score + diversity_bonus` |
+| `Q_ij` (off-diagonal) | Redundancy penalty between i and j | `cosine_similarity(embed_i, embed_j) × penalty_weight` |
+
+- **Diagonal wants:** high correctness → more negative → more likely selected
+- **Off-diagonal wants:** two similar reasons → high penalty → prevents selecting both
 
 ### 7.2 Practical decomposition
 
 ```mermaid
 flowchart LR
-    C[Correctness score] --> D[Diagonal terms Qii]
+    C[Correctness score] --> D[Diagonal Qii]
     S[Semantic similarity] --> O[Off-diagonal Qij]
     D --> Q[QUBO Matrix Q]
     O --> Q
@@ -303,14 +367,27 @@ flowchart LR
 ```
 
 ### 7.3 Simulated annealing acceptance rule
-For candidate state transition with energy change `DeltaE` and temperature `T`:
 
-- always accept if `DeltaE < 0`
-- otherwise accept with probability `exp(-DeltaE / T)`
+Think of it like shaking a box of marbles while slowly reducing the shaking:
 
-Cooling schedule (current implementation):
+- At high temperature: the solver explores wildly (accepts bad moves sometimes)
+- At low temperature: the solver settles (only accepts good moves)
 
-`T_{k+1} = max(T_final, T_k * cooling_rate)`
+**Decision rule for each step:**
+
+- Always accept if the new state has lower energy (`ΔE < 0`)
+- Otherwise accept randomly with probability `P = exp(-ΔE / T)`
+
+**Cooling schedule:**
+
+`T_{k+1} = max(T_final, T_k × cooling_rate)`
+
+| Parameter | Value | Effect |
+|-----------|-------|--------|
+| Initial temp | 100.0 | Starts very exploratory |
+| Final temp | 0.01 | Ends very settled |
+| Cooling rate | 0.99 | Cools slowly (500 steps) |
+| Reads | 2 | Two independent runs, take the best |
 
 ### 7.4 Method comparison axis
 
@@ -349,13 +426,13 @@ quadrantChart
 │   ├── inference.py
 │   └── hyperparam_qubo.py
 ├── scripts/
-│   ├── generate_comparison.py
-│   └── evaluate_accuracy.py
+│   ├── generate_comparison.py        # 7 selection methods comparison
+│   ├── evaluate_accuracy.py          # Sanity check on 6 questions
+│   └── run_all_benchmarks.py         # Run all 5 benchmarks → CSV/JSON/MD
 ├── training/
-│   ├── __init__.py
-│   └── sft.py
-├── outputs/
-├── cache/
+│   └── sft.py                        # SFT stub (needs A100 GPU)
+├── outputs/                          # Benchmark results
+├── cache/models/                     # Cached model weights
 ├── requirements.txt
 ├── IMPLEMENTATION_ROADMAP.md
 └── README.md
@@ -387,19 +464,27 @@ Edit `config/config.yaml` for model, sampling, solver, and evaluation parameters
 
 ## 10) Usage
 
-### Run GSM8K baseline vs QUBO comparison
+### Run all 5 benchmarks (recommended)
 
 ```bash
-python3 evaluation/run_gsm8k_comparison.py --subset-size 100 --output-dir outputs
+python3 scripts/run_all_benchmarks.py --subset-size 100
 ```
 
-### Run method comparison utility
+Runs GSM8K, BBH, StrategyQA, ARC-Challenge, and MMLU in sequence. Each question is evaluated with greedy, CoT, and QUBO pipeline. Outputs CSV + JSON + Markdown.
+
+### Run just GSM8K comparison
+
+```bash
+python3 evaluation/run_gsm8k_comparison.py --subset-size 100
+```
+
+### Run method comparison (7 selection methods)
 
 ```bash
 python3 scripts/generate_comparison.py
 ```
 
-### Run small local accuracy harness
+### Run accuracy sanity check
 
 ```bash
 python3 scripts/evaluate_accuracy.py
@@ -410,7 +495,7 @@ python3 scripts/evaluate_accuracy.py
 ```python
 from evaluation import BenchmarkRunner
 
-runner = BenchmarkRunner(config_path="config/config.yaml")
+runner = BenchmarkRunner()
 results = runner.run_all(pipeline_fn=lambda q: "A")
 print(results)
 ```
