@@ -2,7 +2,7 @@ model:
   name: "Qwen/Qwen2.5-7B-Instruct"
   cache_dir: "./cache/models"
   load_in_4bit: false
-  attn_implementation: "flash_attention_2"
+  attn_implementation: "sdpa"
   use_vllm: true
   vllm:
     dtype: "auto"
