@@ -55,7 +55,7 @@ class ReasonVerifier:
         except ValueError:
             return None
 
-    def verify_math(self, reason: str, expected_answer: Optional[str] = None) -> float:
+    def verify_math(self, reason: str, expected_answer: Optional[str] = None, predicted_answer: Optional[str] = None) -> float:
         computations = self._extract_arithmetic(reason)
         if not computations:
             base = 0.3
@@ -68,7 +68,7 @@ class ReasonVerifier:
 
         if expected_answer is not None:
             gold_num = self._extract_last_number(expected_answer)
-            pred_num = self._extract_last_number(reason)
+            pred_num = self._extract_last_number(predicted_answer or reason)
             if gold_num is not None and pred_num is not None:
                 match = 1.0 if abs(pred_num - gold_num) < 0.01 else 0.0
                 return 0.6 * match + 0.4 * base
@@ -89,7 +89,7 @@ class ReasonVerifier:
 
     def verify(self, reason: str, task_type: str = "math", answer: Optional[str] = None, gold: Optional[str] = None) -> float:
         if task_type == "math":
-            return self.verify_math(reason, expected_answer=gold or answer)
+            return self.verify_math(reason, expected_answer=gold, predicted_answer=answer)
         else:
             return self.verify_commonsense(reason, answer or "")
 
