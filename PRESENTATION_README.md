@@ -282,7 +282,128 @@ Week 5 (Jul 13-19):  Phase E — vLLM, W&B tracking, final benchmark sweep
 |-------|--------|--------|:-------------:|:---------------:|
 | Current | deepseek-coder-1.5B + QUBO | CPU/FP32 | ~60-66% | ~30 min |
 | + Phase A | Qwen2.5-7B + QUBO | H100 4-bit | ~72-76% | ~5 min |
-| + Phase B | Full GSM8K eval | H100 batch | ~74-78% | ~8 min |
+ | + Phase B | Full GSM8K eval | H100 batch | ~74-78% | ~8 min |
 | + Phase C | LoRA SFT on QUBO traces | H100 train | ~84-88% | — |
 | + Phase D | GPU SA + HUBO | H100 GPU | ~88-91% | ~3 min |
 | + Phase E | vLLM + W&B sweep | H100 tuned | **~91%** | ~2 min |
+
+---
+
+## 11) Common Q&A
+
+### Q1: Which model are we using?
+Currently **`Qwen/Qwen2.5-1.5B-Instruct`** (1.5B parameters, ~3GB). This is an SLM (Small Language Model), matching the project's goal of running on small 3B-class models. Earlier we used `Qwen/Qwen2.5-7B-Instruct` (7B, an LLM) but it caused GPU OOM on crowded servers and was slower. Config: `config/config.yaml:2`.
+
+### Q2: What is the difference between Greedy, CoT, and QUBO?
+
+| Method | What it does | How it runs |
+|--------|-------------|-------------|
+| **Greedy** | Direct answer, no reasoning instruction. `do_sample=False`. | 1 `model.generate()` call per question. ~0.5-2s. |
+| **CoT** | Chain-of-Thought: ask model to "think step by step" before answering. Still deterministic. | 1 `model.generate()` call per question. ~1-3s. |
+| **QUBO** | Full pipeline: 16 diverse samples → score by correctness → embed + cluster → build QUBO matrix → solve with simulated annealing on GPU → final answer from selected samples. | 16+ `model.generate()` calls + verifier + solver. ~15-60s per question. |
+
+Both Greedy and CoT use the same shared model on the same GPU — only the prompt differs. `scripts/run_all_benchmarks.py:89-99`.
+
+### Q3: What exactly is the QUBO pipeline?
+```
+Sampler (16 diverse samples) → Verifier (score each by correctness)
+→ QUBOBuilder (embed, cluster, build Q matrix with quality + diversity terms)
+→ SimulatedAnnealingSolver (solve on GPU)
+→ InferencePipeline.run (generate final answer from selected subset)
+```
+Implemented across: `pipeline/sampling.py`, `pipeline/verifier.py`, `pipeline/qubo_builder.py`, `pipeline/solver.py`, `pipeline/inference.py`.
+
+### Q4: How do I check if the benchmark is running on GPU?
+Two ways:
+1. **`nvidia-smi`** — shows GPU memory usage and utilization. If memory is allocated to a Python process, it's on GPU.
+2. **Startup logs** — the script prints device info:
+   ```
+   Runtime device: cuda:0
+   Inference model device: cuda:0
+   Sampler device: cuda:0
+   ```
+
+### Q5: Why was it running out of memory (OOM)?
+Root causes (all fixed):
+1. **`device_map="auto"`** — was loading model across both GPUs instead of staying on one
+2. **Two model copies** — `InferencePipeline` + `DiverseSampler` each loaded the full 7B model separately
+3. **CPU→GPU transfer spike** — `.to(cuda)` after loading caused temporary memory doubling
+4. **7B model** — too large when other processes already occupied GPU memory
+
+Fixes applied:
+- GPU masking via `CUDA_VISIBLE_DEVICES` before `torch` import (`scripts/run_all_benchmarks.py:14-25`)
+- Single device map `{"": device_index}` for 4-bit loads (`pipeline/device_utils.py:18`)
+- Shared model between inference + sampler (`scripts/run_all_benchmarks.py:492-496`)
+- `low_cpu_mem_usage=True` + direct GPU load (`pipeline/inference.py:54-55`)
+- OOM fallback retries with smaller input/output limits + `use_cache=False`
+- Switched to 1.5B SLM (`config/config.yaml:2`)
+
+### Q6: Why is the benchmark taking so long?
+Each question runs **16 model generations** in the sampler (4 perturbations × 4 temperatures). For 50 questions that's ~800 `model.generate()` calls. Even with a 1.5B model, each generation processes up to 256 tokens. The QUBO solver and verifier add more time. A full 200-question run can take 30-60 minutes depending on GPU contention.
+
+**Speed tips:**
+- Reduce `pipeline.num_answers` in `config/config.yaml` (fewer samples = faster but potentially less diverse)
+- Reduce `pipeline.max_new_tokens` (shorter outputs = faster)
+- Use `--subset-size 20` for quick test runs
+- Use `--benchmarks gsm8k` to run only one benchmark
+
+### Q7: How do I run only one benchmark with fewer questions?
+```bash
+python3 scripts/run_all_benchmarks.py --device cuda:1 --benchmarks gsm8k --subset-size 50
+```
+
+### Q8: How do I stop a running benchmark?
+```bash
+ps aux | grep run_all_benchmarks    # find PID
+kill <PID>                          # graceful stop
+kill -9 <PID>                       # force stop
+```
+Or `Ctrl+C` in the terminal where it's running.
+
+### Q9: What does the progress bar show?
+```
+[    gsm8k]  ██████░░░░░░░░░░░░░░   5/50 batches  |  greedy:  62.5%  |  cot:  65.0%  |  qubo:  63.8%
+```
+- Bar fills as batches complete (4 questions per batch)
+- Percentages show **running accuracy** so far (not final)
+- Updates after each batch finishes
+
+`scripts/run_all_benchmarks.py:588-596`.
+
+### Q10: SLM vs LLM — why does it matter?
+| | SLM (1-3B) | LLM (7B+) |
+|---|---|---|
+| Memory | ~3-6GB | ~15-80GB |
+| Speed | Fast | Slow |
+| Cost | Cheap | Expensive |
+| Project fit | **Primary target** | Nice-to-have |
+
+The project is explicitly designed for **3B-class SLMs** (small language models). The README states: "This project makes small language models (SLMs) reason better." SLMs are cheaper to deploy, faster to run, and the QUBO pipeline compensates for their weaker reasoning ability.
+
+### Q11: What benchmarks are included and what do they test?
+| Benchmark | Type | Questions | What it tests |
+|-----------|------|-----------|---------------|
+| GSM8K | Math word problems | 1,319 | Multi-step arithmetic reasoning |
+| BBH | BigBench Hard | ~6,500 | Logical reasoning, classification |
+| StrategyQA | Yes/no strategy | ~2,290 | Commonsense strategic reasoning |
+| ARC-Challenge | Science MCQs | 1,172 | Grade-school science knowledge |
+| MMLU | Multi-subject MCQs | ~14,000 | Knowledge across 57 subjects |
+
+Config: `config/config.yaml:66-71`.
+
+### Q12: How do I interpret the QUBO accuracy versus Greedy/CoT?
+The QUBO accuracy should be **higher** than both Greedy and CoT if the pipeline working correctly. The key metric is `abs_gain_vs_greedy` — the absolute improvement over the simplest baseline. An improvement of +5-15 percentage points is a good result for an SLM.
+
+### Q13: What flags are available for the benchmark script?
+```
+--device cuda:N       Run on specific GPU (default: cuda:0)
+--benchmarks gsm8k    Run specific benchmark(s) only
+--subset-size N       Use N questions instead of full dataset
+--full                Run full dataset (ignores subset-size)
+--batch-size N        Batch size for inference (default: 4)
+--no-batch            Disable batched inference
+--use-vllm            Use vLLM backend instead of transformers
+--multi-gpu           Distribute benchmarks across GPUs
+--output-dir DIR      Output directory for results
+--seed N              Random seed (default: 42)
+```

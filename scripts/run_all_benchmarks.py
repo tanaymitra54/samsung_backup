@@ -8,6 +8,21 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
+
+def _mask_single_gpu_from_argv():
+    if "--multi-gpu" in sys.argv:
+        return
+
+    for idx, arg in enumerate(sys.argv):
+        if arg == "--device" and idx + 1 < len(sys.argv):
+            device_arg = sys.argv[idx + 1]
+            if device_arg.startswith("cuda:"):
+                os.environ["CUDA_VISIBLE_DEVICES"] = device_arg.split(":", 1)[1]
+            return
+
+
+_mask_single_gpu_from_argv()
+
 import numpy as np
 import torch
 import yaml
@@ -16,10 +31,11 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from evaluation import BenchmarkRunner
-from evaluation.answer_utils import extract_predicted_answer, is_correct_prediction
+from evaluation.answer_utils import extract_predicted_answer, extract_gsm8k_gold, is_correct_prediction
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
+from pipeline.device_utils import resolve_device
 from pipeline.solver import SimulatedAnnealingSolver
 from pipeline.verifier import ReasonVerifier
 
@@ -44,10 +60,14 @@ def parse_args():
                         help="Disable batched inference (force per-question)")
     parser.add_argument("--use-vllm", action="store_true",
                         help="Use vLLM backend for inference")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Single device for benchmark execution (default: evaluation.device or cuda:0)")
     parser.add_argument("--multi-gpu", action="store_true",
                         help="Distribute benchmarks across available GPUs")
     parser.add_argument("--wandb-project", type=str, default=None,
                         help="Weights & Biases project name for tracking")
+    parser.add_argument("--debug", action="store_true",
+                        help="Save first 5 raw model outputs for debugging")
     return parser.parse_args()
 
 
@@ -100,9 +120,6 @@ def baseline_cot(inference: InferencePipeline, question: str) -> str:
 def make_batch_greedy(inference: InferencePipeline):
     def fn(questions: list[str]) -> list[str]:
         prompts = [f"Question: {q}\nAnswer:" for q in questions]
-        use_vllm = inference.config["model"].get("use_vllm", False)
-        if use_vllm:
-            return inference.generate_answers_vllm(prompts)
         return inference.generate_answers_batch(prompts)
     return fn
 
@@ -114,9 +131,6 @@ def make_batch_cot(inference: InferencePipeline):
             f"Question: {q}\nAnswer:"
             for q in questions
         ]
-        use_vllm = inference.config["model"].get("use_vllm", False)
-        if use_vllm:
-            return inference.generate_answers_vllm(prompts)
         return inference.generate_answers_batch(prompts)
     return fn
 
@@ -157,7 +171,7 @@ def is_correct(pred: str, gold: str, benchmark: str) -> bool:
         extracted = extract_mcq_choice(pred)
         return bool(extracted and extracted == gold.strip().upper())
     if benchmark == "gsm8k":
-        return is_correct_prediction(pred, gold)
+        return is_correct_prediction(pred, extract_gsm8k_gold(gold))
     return pred.strip().lower() == gold.strip().lower() or gold.strip().lower() in pred.strip().lower()
 
 
@@ -175,39 +189,57 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
         "",
         "## Accuracy Summary",
         "",
-        "| Benchmark | Samples | Greedy | CoT | QUBO | Δ vs Greedy |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Benchmark | Samples | Greedy | CoT | QUBO | Δ vs Greedy | Status |",
+        "|---|---:|---:|---:|---:|---:|---|",
     ]
     for b in config_benchmarks:
         if b not in results:
             continue
         r = results[b]
-        a = r["accuracy"]
-        lines.append(
-            f"| {b} | {r['num_samples']} "
-            f"| {a['greedy']:.2%} "
-            f"| {a['cot']:.2%} "
-            f"| {a['qubo']:.2%} "
-            f"| {r['abs_gain_vs_greedy']:+.2%} |"
-        )
+        # Check if benchmark has accuracy data or if it failed
+        if "error" in r and "accuracy" not in r:
+            lines.append(
+                f"| {b} | 0 | N/A | N/A | N/A | N/A | ❌ Failed |"
+            )
+        else:
+            a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
+            gain = r.get("abs_gain_vs_greedy", 0.0)
+            lines.append(
+                f"| {b} | {r.get('num_samples', 0)} "
+                f"| {a.get('greedy', 0.0):.2%} "
+                f"| {a.get('cot', 0.0):.2%} "
+                f"| {a.get('qubo', 0.0):.2%} "
+                f"| {gain:+.2%} | ✓ Complete |"
+            )
 
     lines.extend(["", "## Benchmark Details", ""])
     for b in config_benchmarks:
         if b not in results:
             continue
         r = results[b]
-        a = r["accuracy"]
-        lines.extend([
-            f"### {b}",
-            "",
-            f"- Samples: {r['num_samples']}",
-            f"- Greedy accuracy: {a['greedy']:.2%}",
-            f"- CoT accuracy: {a['cot']:.2%}",
-            f"- QUBO pipeline accuracy: {a['qubo']:.2%}",
-            f"- Absolute gain vs Greedy: {r['abs_gain_vs_greedy']:+.2%}",
-            f"- CoT gain over Greedy: {r['cot_gain_over_greedy']:+.2%}",
-            "",
-        ])
+        # Check if benchmark has accuracy data or if it failed
+        if "error" in r and "accuracy" not in r:
+            lines.extend([
+                f"### {b}",
+                "",
+                f"**Status: Failed**",
+                f"- Error: {r['error']}",
+                "",
+            ])
+        else:
+            a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
+            lines.extend([
+                f"### {b}",
+                "",
+                f"- Samples: {r.get('num_samples', 0)}",
+                f"- Failed samples: {r.get('failed_samples', 0)}",
+                f"- Greedy accuracy: {a.get('greedy', 0.0):.2%}",
+                f"- CoT accuracy: {a.get('cot', 0.0):.2%}",
+                f"- QUBO pipeline accuracy: {a.get('qubo', 0.0):.2%}",
+                f"- Absolute gain vs Greedy: {r.get('abs_gain_vs_greedy', 0.0):+.2%}",
+                f"- CoT gain over Greedy: {r.get('cot_gain_over_greedy', 0.0):+.2%}",
+                "",
+            ])
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -223,9 +255,12 @@ def run_benchmark_on_gpu(
     use_batch: bool,
     batch_size: int,
     use_vllm: bool,
+    device: str | None,
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     set_seed(seed)
+
+    worker_device = "cuda:0"
 
     runner = BenchmarkRunner(config_path)
     if subset_size is not None:
@@ -233,16 +268,18 @@ def run_benchmark_on_gpu(
     if full_eval:
         runner.full_eval = True
 
-    sampler = DiverseSampler(config_path)
-    verifier = ReasonVerifier(config_path)
-    qubo_builder = QUBOBuilder(config_path)
-    solver = SimulatedAnnealingSolver(config_path)
-    inference = InferencePipeline(config_path)
+    inference = InferencePipeline(config_path, device=worker_device, use_vllm=use_vllm)
+    runtime_device = str(inference.device)
 
-    if use_vllm:
-        cfg = yaml.safe_load(open(config_path))
-        cfg["model"]["use_vllm"] = True
-        inference.config = cfg
+    sampler = DiverseSampler(
+        config_path,
+        device=runtime_device,
+        shared_model=inference.model,
+        shared_tokenizer=inference.tokenizer,
+    )
+    verifier = ReasonVerifier(config_path, device=runtime_device)
+    qubo_builder = QUBOBuilder(config_path, device=runtime_device)
+    solver = SimulatedAnnealingSolver(config_path, device=runtime_device)
 
     task_type = TASK_TYPE.get(benchmark_name, "math")
     questions, gold_answers = runner.load_benchmark(benchmark_name)
@@ -369,11 +406,17 @@ def run_benchmark_on_gpu(
 
 def main():
     args = parse_args()
+    requested_device = args.device
+    if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
+        selected_device = "cuda:0"
+    else:
+        selected_device = requested_device
     set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     runner = BenchmarkRunner()
+    selected_device = str(resolve_device(selected_device or runner.config.get("evaluation", {}).get("device")))
     if args.subset_size is not None:
         runner.subset_size = args.subset_size
     if args.full:
@@ -384,8 +427,15 @@ def main():
     if unknown:
         raise ValueError(f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}")
 
-    use_batch = not args.no_batch and torch.cuda.is_available()
-    batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 8)
+    use_batch = not args.no_batch and selected_device.startswith("cuda") and torch.cuda.is_available()
+    # Use smaller default batch size (4) to prevent OOM errors; can be overridden with --batch-size
+    batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 4)
+
+    if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
+        print(f"Benchmark device: {requested_device} -> visible as {selected_device}")
+    else:
+        print(f"Benchmark device: {selected_device}")
+    print(f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {torch.cuda.device_count()}")
 
     if args.wandb_project:
         try:
@@ -427,7 +477,7 @@ def main():
                         run_benchmark_on_gpu, gpu_id, b,
                         "config/config.yaml", args.seed,
                         runner.subset_size, runner.full_eval,
-                        use_batch, batch_size, args.use_vllm,
+                        use_batch, batch_size, args.use_vllm, args.device,
                     ))
 
             for future in tqdm(as_completed(futures), total=len(futures), desc="Multi-GPU"):
@@ -437,14 +487,23 @@ def main():
                 a = result["accuracy"]
                 print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
     else:
-        sampler = DiverseSampler()
-        verifier = ReasonVerifier()
-        qubo_builder = QUBOBuilder()
-        solver = SimulatedAnnealingSolver()
-        inference = InferencePipeline()
+        inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
+        runtime_device = str(inference.device)
+        sampler = DiverseSampler(
+            device=runtime_device,
+            shared_model=inference.model,
+            shared_tokenizer=inference.tokenizer,
+        )
+        verifier = ReasonVerifier(device=runtime_device)
+        qubo_builder = QUBOBuilder(device=runtime_device)
+        solver = SimulatedAnnealingSolver(device=runtime_device)
 
-        if args.use_vllm:
-            inference.config["model"]["use_vllm"] = True
+        print(f"Runtime device: {runtime_device}")
+        print(f"Inference model device: {inference.model_input_device if not inference.use_vllm else inference.device}")
+        print(f"Generation device: {inference.generation_input_device if not inference.use_vllm else inference.device}")
+        print(f"Sampler device: {sampler.device}")
+        print(f"Verifier device: {verifier.device}")
+        print(f"Solver device: {solver.device}")
 
         csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
         fieldnames = [
@@ -465,7 +524,7 @@ def main():
                 questions, gold_answers = runner.load_benchmark(b)
             except Exception as e:
                 print(f"  Failed to load benchmark {b}: {e}")
-                summary[b] = {"error": str(e), "num_samples": 0}
+                summary[b] = {"error": str(e), "num_samples": 0, "accuracy": {"greedy": 0.0, "cot": 0.0, "qubo": 0.0}, "abs_gain_vs_greedy": 0.0, "cot_gain_over_greedy": 0.0}
                 continue
 
             task_type = TASK_TYPE.get(b, "math")
@@ -479,7 +538,9 @@ def main():
             if use_batch and batch_size > 1:
                 batch_greedy_fn = make_batch_greedy(inference)
                 batch_cot_fn = make_batch_cot(inference)
+                batch_total = (len(questions) + batch_size - 1) // batch_size
                 for i in range(0, len(questions), batch_size):
+                    batch_num = i // batch_size + 1
                     batch_q = questions[i:i + batch_size]
                     batch_gold = gold_answers[i:i + batch_size]
                     try:
@@ -516,7 +577,15 @@ def main():
                             }
                             writer.writerow(row)
                             all_rows.append(row)
+                            if len(all_rows) <= 3:
+                                print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(preds_g[j][:200])}' raw_c='{repr(preds_c[j][:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
+                        acc_g = (correct_greedy / total) * 100 if total else 0.0
+                        acc_c = (correct_cot / total) * 100 if total else 0.0
+                        acc_q = (correct_qubo / total) * 100 if total else 0.0
                     except Exception as e:
+                        import traceback
+                        print(f"\n  ⚠️  BATCH ERROR (batch {batch_num}): {e}")
+                        traceback.print_exc()
                         failed += len(batch_q)
                         for j in range(len(batch_q)):
                             row = {
@@ -527,6 +596,19 @@ def main():
                                 "error": str(e),
                             }
                             writer.writerow(row)
+
+                    acc_g = (correct_greedy / total) * 100 if total else 0.0
+                    acc_c = (correct_cot / total) * 100 if total else 0.0
+                    acc_q = (correct_qubo / total) * 100 if total else 0.0
+                    bar_len = 20
+                    filled = int(bar_len * batch_num / batch_total)
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    print(
+                        f"\r  [{b:>12}]  {bar}  {batch_num:>3}/{batch_total} batches  "
+                        f"|  greedy: {acc_g:>5.1f}%  |  cot: {acc_c:>5.1f}%  |  qubo: {acc_q:>5.1f}%",
+                        end="", flush=True,
+                    )
+                print()
             else:
                 for idx, (q, gold) in enumerate(tqdm(
                     list(zip(questions, gold_answers)), desc=f"{b}", leave=False
@@ -562,7 +644,12 @@ def main():
                         }
                         writer.writerow(row)
                         all_rows.append(row)
+                        if len(all_rows) <= 3:
+                            print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(pred_greedy[:200])}' raw_c='{repr(pred_cot[:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
                     except Exception as e:
+                        import traceback
+                        print(f"  ⚠️  ERROR (question {idx}): {e}")
+                        traceback.print_exc()
                         failed += 1
                         row = {
                             "benchmark": b, "id": idx, "question": q, "gold": gold,
@@ -583,7 +670,7 @@ def main():
                 "abs_gain_vs_greedy": acc_qubo - acc_greedy,
                 "cot_gain_over_greedy": acc_cot - acc_greedy,
             }
-            print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
+            print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%} | samples={total} failed={failed}")
 
             if args.wandb_project:
                 try:
@@ -608,7 +695,7 @@ def main():
         "seed": args.seed,
         "benchmarks": benchmark_list,
         "model": cfg.get("model", {}).get("name", "unknown"),
-        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "device": selected_device,
         "use_batch": use_batch,
         "batch_size": batch_size,
         "use_vllm": args.use_vllm,

@@ -5,9 +5,11 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 
+from pipeline.device_utils import resolve_device
+
 
 class QUBOBuilder:
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
@@ -20,7 +22,8 @@ class QUBOBuilder:
         self.hubo_enabled = qubo_cfg.get("hubo_enabled", False)
         self.hubo_triplet_penalty = qubo_cfg.get("hubo_triplet_penalty", 1.0)
 
-        embedder_device = qubo_cfg.get("embedder_device", "cpu")
+        preferred_device = device or self.config.get("evaluation", {}).get("device")
+        embedder_device = qubo_cfg.get("embedder_device") or str(resolve_device(preferred_device))
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
 
     def _embed_reasons(self, reasons: list[str]) -> np.ndarray:

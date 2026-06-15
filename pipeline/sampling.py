@@ -1,6 +1,7 @@
 import torch
 import yaml
 import random
+import gc
 import numpy as np
 from pathlib import Path
 from typing import Optional
@@ -10,31 +11,71 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
+from pipeline.device_utils import resolve_device
+
 
 class DiverseSampler:
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(
+        self,
+        config_path: str = "config/config.yaml",
+        device: str | None = None,
+        shared_model=None,
+        shared_tokenizer=None,
+    ):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
         model_cfg = self.config["model"]
         pipe_cfg = self.config["pipeline"]
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_cfg["name"],
-            cache_dir=model_cfg.get("cache_dir"),
-            padding_side="left",
-        )
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        preferred_device = device or self.config.get("evaluation", {}).get("device")
+        self.device = resolve_device(preferred_device)
+        if shared_model is not None and shared_tokenizer is not None:
+            self.model = shared_model
+            self.tokenizer = shared_tokenizer
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_cfg["name"],
+                cache_dir=model_cfg.get("cache_dir"),
+                padding_side="left",
+            )
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
 
+            load_in_4bit = model_cfg.get("load_in_4bit", False)
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_cfg["name"], **self._build_model_kwargs(model_cfg, load_in_4bit)
+                )
+            except torch.cuda.OutOfMemoryError:
+                if self.device.type != "cuda" or load_in_4bit:
+                    raise
+                torch.cuda.empty_cache()
+                gc.collect()
+                print("CUDA OOM while loading sampler model, retrying with 4-bit quantization...")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_cfg["name"], **self._build_model_kwargs(model_cfg, True)
+                )
+            if self.device.type == "cpu":
+                self.model = self.model.to(self.device)
+        self.model.eval()
+
+        self.num_answers = pipe_cfg["num_answers"]
+        self.num_reasons = pipe_cfg["num_reasons"]
+        self.max_new_tokens = pipe_cfg["max_new_tokens"]
+        self.top_p = pipe_cfg["top_p"]
+        self.sampling_max_new_tokens = min(pipe_cfg.get("sampling_max_new_tokens", 64), self.max_new_tokens)
+        self.sampling_max_input_tokens = pipe_cfg.get("sampling_max_input_tokens", 768)
+
+    def _build_model_kwargs(self, model_cfg: dict, load_in_4bit: bool) -> dict:
         model_kwargs = {
             "cache_dir": model_cfg.get("cache_dir"),
-            "device_map": "auto" if self.device == "cuda" else None,
+            "low_cpu_mem_usage": True,
         }
-
-        if self.device == "cuda":
-            if model_cfg.get("load_in_4bit"):
+        if self.device.type == "cuda":
+            model_kwargs["device_map"] = "auto"
+            model_kwargs["torch_dtype"] = torch.float16
+            if load_in_4bit:
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=getattr(
@@ -47,45 +88,69 @@ class DiverseSampler:
                 model_kwargs["torch_dtype"] = getattr(
                     torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
                 )
-            else:
-                model_kwargs["torch_dtype"] = torch.float16
-
-            attn_impl = model_cfg.get("attn_implementation")
-            if attn_impl:
-                model_kwargs["attn_implementation"] = attn_impl
         else:
             model_kwargs["torch_dtype"] = torch.float32
+        return model_kwargs
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_cfg["name"], **model_kwargs
-        )
-        if self.device == "cpu":
-            self.model = self.model.to(self.device)
-        self.model.eval()
-
-        self.num_answers = pipe_cfg["num_answers"]
-        self.num_reasons = pipe_cfg["num_reasons"]
-        self.max_new_tokens = pipe_cfg["max_new_tokens"]
-        self.top_p = pipe_cfg["top_p"]
+    def _apply_chat_template(self, prompt: str) -> str:
+        if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template:
+            messages = [
+                {"role": "user", "content": prompt},
+            ]
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        return prompt
 
     def generate_with_contrastive_decode(
         self, prompt: str, temperature: float, alpha: float = 0.1
     ) -> str:
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=temperature,
-                top_p=self.top_p,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-        generated = self.tokenizer.decode(
-            outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
-        )
-        return generated.strip()
+        chat_prompt = self._apply_chat_template(prompt)
+        retry_limits = [
+            (self.sampling_max_input_tokens, self.sampling_max_new_tokens),
+            (min(self.sampling_max_input_tokens, 512), min(self.sampling_max_new_tokens, 32)),
+            (min(self.sampling_max_input_tokens, 384), 16),
+        ]
+
+        for max_input_tokens, max_new_tokens in retry_limits:
+            inputs = None
+            outputs = None
+            try:
+                inputs = self.tokenizer(
+                    chat_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_input_tokens,
+                ).to(self.device)
+                with torch.inference_mode():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=self.top_p,
+                        do_sample=True,
+                        use_cache=False,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+                generated = self.tokenizer.decode(
+                    outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+                )
+                return generated.strip()
+            except RuntimeError as e:
+                if "out of memory" not in str(e).lower():
+                    raise
+                torch.cuda.empty_cache()
+                gc.collect()
+            finally:
+                if inputs is not None:
+                    del inputs
+                if outputs is not None:
+                    del outputs
+                torch.cuda.empty_cache()
+                gc.collect()
+
+        return ""
 
     def _parse_reason_answer(self, text: str):
         lines = text.strip().split("\n")
