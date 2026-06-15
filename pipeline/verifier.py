@@ -44,15 +44,36 @@ class ReasonVerifier:
                 results.append(a / b)
         return results
 
+    def _extract_last_number(self, text: str) -> Optional[float]:
+        cleaned = text.strip().replace(",", "")
+        matches = re.findall(r"-?\d+(?:\.\d+)?", cleaned)
+        if not matches:
+            return None
+        try:
+            v = float(matches[-1])
+            return int(v) if v.is_integer() else v
+        except ValueError:
+            return None
+
     def verify_math(self, reason: str, expected_answer: Optional[str] = None) -> float:
         computations = self._extract_arithmetic(reason)
         if not computations:
-            return 0.3
-        consistency = 1.0
-        if len(computations) > 1:
-            diffs = [abs(computations[i] - computations[i + 1]) for i in range(len(computations) - 1)]
-            consistency = 1.0 / (1.0 + np.mean(diffs))
-        return min(1.0, consistency)
+            base = 0.3
+        else:
+            consistency = 1.0
+            if len(computations) > 1:
+                diffs = [abs(computations[i] - computations[i + 1]) for i in range(len(computations) - 1)]
+                consistency = 1.0 / (1.0 + np.mean(diffs))
+            base = min(1.0, consistency)
+
+        if expected_answer is not None:
+            gold_num = self._extract_last_number(expected_answer)
+            pred_num = self._extract_last_number(reason)
+            if gold_num is not None and pred_num is not None:
+                match = 1.0 if abs(pred_num - gold_num) < 0.01 else 0.0
+                return 0.6 * match + 0.4 * base
+
+        return base
 
     def verify_commonsense(self, reason: str, answer: str) -> float:
         premise = reason
@@ -66,18 +87,19 @@ class ReasonVerifier:
         entail_prob = probs[0][0].item()
         return entail_prob
 
-    def verify(self, reason: str, task_type: str = "math", answer: Optional[str] = None) -> float:
+    def verify(self, reason: str, task_type: str = "math", answer: Optional[str] = None, gold: Optional[str] = None) -> float:
         if task_type == "math":
-            return self.verify_math(reason)
+            return self.verify_math(reason, expected_answer=gold or answer)
         else:
             return self.verify_commonsense(reason, answer or "")
 
-    def score_batch(self, samples: list[dict], task_type: str = "math") -> list[dict]:
+    def score_batch(self, samples: list[dict], task_type: str = "math", gold: Optional[str] = None) -> list[dict]:
         for sample in samples:
             score = self.verify(
                 sample["reason"],
                 task_type=task_type,
                 answer=sample.get("answer"),
+                gold=gold,
             )
             sample["correctness_score"] = score
         return samples

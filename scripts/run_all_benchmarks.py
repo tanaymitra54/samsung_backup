@@ -143,11 +143,12 @@ def run_qubo_pipeline(
     inference: InferencePipeline,
     question: str,
     task_type: str = "math",
+    gold: str = "",
 ) -> str:
     samples = sampler.sample(question)
     if not samples:
         return ""
-    samples = verifier.score_batch(samples, task_type=task_type)
+    samples = verifier.score_batch(samples, task_type=task_type, gold=gold)
     Q, qubo_var_indices = qubo_builder.build_qubo(samples)
     state, _ = solver.solve(Q)
     selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
@@ -304,13 +305,13 @@ def run_benchmark_on_gpu(
                 preds_c = batch_cot_fn(batch_q)
                 t2 = time.time()
                 for j, q in enumerate(batch_q):
+                    gold = batch_gold[j]
                     pred_q = run_qubo_pipeline(
-                        sampler, verifier, qubo_builder, solver, inference, q, task_type
+                        sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
                     )
                     pred_qubo_n = extract_answer(pred_q, benchmark_name)
                     pred_g_n = extract_answer(preds_g[j], benchmark_name)
                     pred_c_n = extract_answer(preds_c[j], benchmark_name)
-                    gold = batch_gold[j]
                     c_g = int(is_correct(pred_g_n, gold, benchmark_name))
                     c_c = int(is_correct(pred_c_n, gold, benchmark_name))
                     c_q = int(is_correct(pred_qubo_n, gold, benchmark_name))
@@ -356,7 +357,7 @@ def run_benchmark_on_gpu(
                 pred_cot = baseline_cot(inference, q)
                 t2 = time.time()
                 pred_qubo = run_qubo_pipeline(
-                    sampler, verifier, qubo_builder, solver, inference, q, task_type
+                    sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
                 )
                 t3 = time.time()
                 pred_g_n = extract_answer(pred_greedy, benchmark_name)
@@ -551,14 +552,14 @@ def main():
                         t2 = time.time()
                         for j, q in enumerate(batch_q):
                             tq = time.time()
+                            gold = batch_gold[j]
                             pred_qubo = run_qubo_pipeline(
-                                sampler, verifier, qubo_builder, solver, inference, q, task_type
+                                sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
                             )
                             tq_end = time.time()
                             pred_g_n = extract_answer(preds_g[j], b)
                             pred_c_n = extract_answer(preds_c[j], b)
                             pred_q_n = extract_answer(pred_qubo, b)
-                            gold = batch_gold[j]
                             c_g = int(is_correct(pred_g_n, gold, b))
                             c_c = int(is_correct(pred_c_n, gold, b))
                             c_q = int(is_correct(pred_q_n, gold, b))
@@ -619,7 +620,7 @@ def main():
                         pred_cot = baseline_cot(inference, q)
                         t2 = time.time()
                         pred_qubo = run_qubo_pipeline(
-                            sampler, verifier, qubo_builder, solver, inference, q, task_type
+                            sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
                         )
                         t3 = time.time()
                         pred_g_n = extract_answer(pred_greedy, b)
