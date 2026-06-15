@@ -122,11 +122,13 @@ class InferencePipeline:
         from vllm import LLM, SamplingParams
         if not hasattr(self, "_vllm_model"):
             model_cfg = self.config["model"]
+            vllm_cfg = model_cfg.get("vllm", {})
             self._vllm_model = LLM(
                 model=model_cfg["name"],
-                quantization="fp8" if self.device == "cuda" else None,
-                tensor_parallel_size=1,
-                gpu_memory_utilization=0.9,
+                dtype=vllm_cfg.get("dtype", "auto"),
+                quantization=vllm_cfg.get("quantization"),
+                tensor_parallel_size=vllm_cfg.get("tensor_parallel_size", 1),
+                gpu_memory_utilization=vllm_cfg.get("gpu_memory_utilization", 0.9),
             )
         params = SamplingParams(
             temperature=0.3,
