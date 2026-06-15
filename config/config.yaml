@@ -71,5 +71,5 @@ evaluation:
     - "mmlu"
   subset_size: 200
   full_eval: false
-  batch_size: 32
+  batch_size: 4
   use_batched_inference: true
