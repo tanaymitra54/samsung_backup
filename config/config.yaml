@@ -1,12 +1,14 @@
 model:
   name: "Qwen/Qwen2.5-7B-Instruct"
   cache_dir: "./cache/models"
-  load_in_4bit: true
-  bnb_4bit_compute_dtype: "float16"
-  bnb_4bit_use_double_quant: true
-  bnb_4bit_quant_type: "nf4"
+  load_in_4bit: false
   attn_implementation: "flash_attention_2"
-  use_vllm: false
+  use_vllm: true
+  vllm:
+    dtype: "auto"
+    quantization: "fp8"
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.9
 
 pipeline:
   num_answers: 4
@@ -41,9 +43,9 @@ solver:
     iterations: 500
     num_reads: 2
   gpu:
-    enabled: false
+    enabled: true
     num_parallel_reads: 1024
-    use_parallel_tempering: false
+    use_parallel_tempering: true
     use_counterdiabatic: false
 
 training:
@@ -69,5 +71,5 @@ evaluation:
     - "mmlu"
   subset_size: 200
   full_eval: false
-  batch_size: 8
-  use_batched_inference: false
+  batch_size: 32
+  use_batched_inference: true
