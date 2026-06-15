@@ -95,19 +95,60 @@ class InferencePipeline:
         chat_prompt = self._apply_chat_template(prompt)
         if self.use_vllm:
             return self.generate_answers_vllm([chat_prompt])[0]
-        inputs = self.tokenizer(chat_prompt, return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                temperature=0.0,
-                do_sample=False,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
+        
+        # Tokenize with truncation to prevent OOM
+        inputs = self.tokenizer(
+            chat_prompt, 
+            return_tensors="pt",
+            truncation=True,
+            max_length=2048
+        ).to(self.device)
+        
+        try:
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=self.config["pipeline"]["max_new_tokens"],
+                    temperature=0.0,
+                    do_sample=False,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                # Clear GPU memory and retry
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                # Re-tokenize with truncation on CPU
+                inputs = self.tokenizer(
+                    chat_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=2048
+                )
+                
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=self.config["pipeline"]["max_new_tokens"],
+                        temperature=0.0,
+                        do_sample=False,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+            else:
+                raise
+        
         answer = self.tokenizer.decode(
             outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
         )
+        
+        # Clean up
+        del inputs, outputs
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         return answer.strip()
 
     def generate_answers_batch(self, prompts: list[str], batch_size: int = 4) -> list[str]:
