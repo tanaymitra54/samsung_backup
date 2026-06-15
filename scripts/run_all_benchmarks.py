@@ -538,7 +538,9 @@ def main():
             if use_batch and batch_size > 1:
                 batch_greedy_fn = make_batch_greedy(inference)
                 batch_cot_fn = make_batch_cot(inference)
+                batch_total = (len(questions) + batch_size - 1) // batch_size
                 for i in range(0, len(questions), batch_size):
+                    batch_num = i // batch_size + 1
                     batch_q = questions[i:i + batch_size]
                     batch_gold = gold_answers[i:i + batch_size]
                     try:
@@ -577,9 +579,20 @@ def main():
                             all_rows.append(row)
                             if len(all_rows) <= 3:
                                 print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(preds_g[j][:200])}' raw_c='{repr(preds_c[j][:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
+                        acc_g = (correct_greedy / total) * 100 if total else 0.0
+                        acc_c = (correct_cot / total) * 100 if total else 0.0
+                        acc_q = (correct_qubo / total) * 100 if total else 0.0
+                        bar_len = 20
+                        filled = int(bar_len * batch_num / batch_total)
+                        bar = "█" * filled + "░" * (bar_len - filled)
+                        print(
+                            f"\r  [{b}] {bar} {batch_num}/{batch_total} batches "
+                            f"| greedy: {acc_g:.1f}%  cot: {acc_c:.1f}%  qubo: {acc_q:.1f}%",
+                            end="", flush=True,
+                        )
                     except Exception as e:
                         import traceback
-                        print(f"  ⚠️  BATCH ERROR (batch {i//batch_size}): {e}")
+                        print(f"\n  ⚠️  BATCH ERROR (batch {batch_num}): {e}")
                         traceback.print_exc()
                         failed += len(batch_q)
                         for j in range(len(batch_q)):
@@ -591,6 +604,7 @@ def main():
                                 "error": str(e),
                             }
                             writer.writerow(row)
+                print()
             else:
                 for idx, (q, gold) in enumerate(tqdm(
                     list(zip(questions, gold_answers)), desc=f"{b}", leave=False
