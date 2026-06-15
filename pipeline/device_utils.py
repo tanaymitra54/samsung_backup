@@ -15,7 +15,7 @@ def resolve_device(preferred: str | None = None) -> torch.device:
 def hf_device_map_value(device: torch.device):
     if device.type != "cuda":
         return None
-    return "cuda:" + str(device.index or 0)
+    return device.index or 0
 
 
 def candidate_cuda_devices(preferred: str | None = None) -> list[torch.device]:
