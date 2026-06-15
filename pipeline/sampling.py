@@ -64,6 +64,8 @@ class DiverseSampler:
         self.num_reasons = pipe_cfg["num_reasons"]
         self.max_new_tokens = pipe_cfg["max_new_tokens"]
         self.top_p = pipe_cfg["top_p"]
+        self.sampling_max_new_tokens = min(pipe_cfg.get("sampling_max_new_tokens", 64), self.max_new_tokens)
+        self.sampling_max_input_tokens = pipe_cfg.get("sampling_max_input_tokens", 768)
 
     def _build_model_kwargs(self, model_cfg: dict, load_in_4bit: bool) -> dict:
         model_kwargs = {
@@ -104,21 +106,51 @@ class DiverseSampler:
         self, prompt: str, temperature: float, alpha: float = 0.1
     ) -> str:
         chat_prompt = self._apply_chat_template(prompt)
-        inputs = self.tokenizer(chat_prompt, return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=temperature,
-                top_p=self.top_p,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-        generated = self.tokenizer.decode(
-            outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
-        )
-        return generated.strip()
+        retry_limits = [
+            (self.sampling_max_input_tokens, self.sampling_max_new_tokens),
+            (min(self.sampling_max_input_tokens, 512), min(self.sampling_max_new_tokens, 32)),
+            (min(self.sampling_max_input_tokens, 384), 16),
+        ]
+
+        for max_input_tokens, max_new_tokens in retry_limits:
+            inputs = None
+            outputs = None
+            try:
+                inputs = self.tokenizer(
+                    chat_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_input_tokens,
+                ).to(self.device)
+                with torch.inference_mode():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=self.top_p,
+                        do_sample=True,
+                        use_cache=False,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+                generated = self.tokenizer.decode(
+                    outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+                )
+                return generated.strip()
+            except RuntimeError as e:
+                if "out of memory" not in str(e).lower():
+                    raise
+                torch.cuda.empty_cache()
+                gc.collect()
+            finally:
+                if inputs is not None:
+                    del inputs
+                if outputs is not None:
+                    del outputs
+                torch.cuda.empty_cache()
+                gc.collect()
+
+        return ""
 
     def _parse_reason_answer(self, text: str):
         lines = text.strip().split("\n")

@@ -35,6 +35,10 @@ class InferencePipeline:
             if self.device.type == "cpu":
                 self.model = self.model.to(self.device)
             self.model.eval()
+            self.model.generation_config.do_sample = False
+            self.model.generation_config.temperature = None
+            self.model.generation_config.top_p = None
+            self.model.generation_config.top_k = None
             self.model_input_device = self._get_model_input_device()
             self.generation_input_device = self._get_generation_input_device()
 
