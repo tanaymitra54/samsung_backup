@@ -22,7 +22,7 @@ verifier:
   math_mode: "calculator"
   nli_model: "cross-encoder/nli-deberta-v3-base"
   nli_threshold: 0.5
-  device_map_verifier: "cpu"
+  device_map_verifier: null
 
 qubo:
   max_vars: 200
@@ -32,7 +32,7 @@ qubo:
   diversity_bonus: 0.5
   hubo_enabled: false
   hubo_triplet_penalty: 1.0
-  embedder_device: "cpu"
+  embedder_device: null
 
 solver:
   method: "simulated_annealing"
@@ -63,6 +63,7 @@ training:
   warmup_steps: 100
 
 evaluation:
+  device: "cuda:0"
   benchmarks:
     - "gsm8k"
     - "bbh"

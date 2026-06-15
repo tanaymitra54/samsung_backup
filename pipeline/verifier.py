@@ -5,9 +5,11 @@ import torch
 from typing import Optional
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from pipeline.device_utils import resolve_device
+
 
 class ReasonVerifier:
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
@@ -15,14 +17,12 @@ class ReasonVerifier:
         self.math_mode = verifier_cfg["math_mode"]
         self.nli_threshold = verifier_cfg["nli_threshold"]
 
-        device_map = verifier_cfg.get("device_map_verifier", "auto")
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        preferred_device = device or self.config.get("evaluation", {}).get("device")
+        self.device = resolve_device(preferred_device)
         self.nli_model = AutoModelForSequenceClassification.from_pretrained(
             verifier_cfg["nli_model"],
-            device_map=device_map if self.device == "cuda" else None,
         )
-        if self.device != "cuda":
-            self.nli_model = self.nli_model.to(self.device)
+        self.nli_model = self.nli_model.to(self.device)
         self.nli_tokenizer = AutoTokenizer.from_pretrained(
             verifier_cfg["nli_model"]
         )

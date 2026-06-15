@@ -6,32 +6,34 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from pipeline.device_utils import hf_device_map_value, resolve_device
+
 
 class InferencePipeline:
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, use_vllm: bool | None = None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
         model_cfg = self.config["model"]
         pipe_cfg = self.config["pipeline"]
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        preferred_device = device or self.config.get("evaluation", {}).get("device")
+        self.device = resolve_device(preferred_device)
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_cfg["name"], cache_dir=model_cfg.get("cache_dir")
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.use_vllm = model_cfg.get("use_vllm", False)
+        self.use_vllm = model_cfg.get("use_vllm", False) if use_vllm is None else use_vllm
 
         if self.use_vllm:
             self.model = None
         else:
             model_kwargs = {
                 "cache_dir": model_cfg.get("cache_dir"),
-                "device_map": "auto" if self.device == "cuda" else None,
             }
-            if self.device == "cuda":
+            if self.device.type == "cuda":
                 if model_cfg.get("load_in_4bit"):
                     bnb_config = BitsAndBytesConfig(
                         load_in_4bit=True,
@@ -45,6 +47,7 @@ class InferencePipeline:
                     model_kwargs["torch_dtype"] = getattr(
                         torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
                     )
+                    model_kwargs["device_map"] = {"": hf_device_map_value(self.device)}
                 else:
                     model_kwargs["torch_dtype"] = torch.float16
                 attn_impl = model_cfg.get("attn_implementation")
@@ -55,14 +58,16 @@ class InferencePipeline:
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_cfg["name"], **model_kwargs
             )
-            if self.device == "cpu":
+            if self.device.type == "cpu":
+                self.model = self.model.to(self.device)
+            elif not model_cfg.get("load_in_4bit"):
                 self.model = self.model.to(self.device)
             self.model.eval()
             self.model_input_device = self._get_model_input_device()
             self.generation_input_device = self._get_generation_input_device()
 
         self.subset_size = pipe_cfg["subset_size"]
-        embedder_device = self.config.get("qubo", {}).get("embedder_device", self.device)
+        embedder_device = self.config.get("qubo", {}).get("embedder_device") or str(self.device)
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
 
     def _get_model_input_device(self):
@@ -76,9 +81,6 @@ class InferencePipeline:
     def _get_generation_input_device(self):
         if self.use_vllm or self.model is None:
             return self.device
-        device_map = getattr(self.model, "hf_device_map", None)
-        if device_map and len(set(device_map.values())) > 1:
-            return torch.device("cpu")
         return self.model_input_device
 
     def _rank_reasons_by_relevance(self, reasons: list[str], question: str) -> list[int]:

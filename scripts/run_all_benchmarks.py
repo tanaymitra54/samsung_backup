@@ -20,6 +20,7 @@ from evaluation.answer_utils import extract_predicted_answer, extract_gsm8k_gold
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
+from pipeline.device_utils import resolve_device
 from pipeline.solver import SimulatedAnnealingSolver
 from pipeline.verifier import ReasonVerifier
 
@@ -44,6 +45,8 @@ def parse_args():
                         help="Disable batched inference (force per-question)")
     parser.add_argument("--use-vllm", action="store_true",
                         help="Use vLLM backend for inference")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Single device for benchmark execution (default: evaluation.device or cuda:0)")
     parser.add_argument("--multi-gpu", action="store_true",
                         help="Distribute benchmarks across available GPUs")
     parser.add_argument("--wandb-project", type=str, default=None,
@@ -237,9 +240,12 @@ def run_benchmark_on_gpu(
     use_batch: bool,
     batch_size: int,
     use_vllm: bool,
+    device: str | None,
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     set_seed(seed)
+
+    worker_device = "cuda:0"
 
     runner = BenchmarkRunner(config_path)
     if subset_size is not None:
@@ -247,16 +253,12 @@ def run_benchmark_on_gpu(
     if full_eval:
         runner.full_eval = True
 
-    inference = InferencePipeline(config_path)
-    if use_vllm:
-        cfg = yaml.safe_load(open(config_path))
-        cfg["model"]["use_vllm"] = True
-        inference.config = cfg
+    inference = InferencePipeline(config_path, device=worker_device, use_vllm=use_vllm)
 
-    sampler = DiverseSampler(config_path)
-    verifier = ReasonVerifier(config_path)
-    qubo_builder = QUBOBuilder(config_path)
-    solver = SimulatedAnnealingSolver(config_path)
+    sampler = DiverseSampler(config_path, device=worker_device)
+    verifier = ReasonVerifier(config_path, device=worker_device)
+    qubo_builder = QUBOBuilder(config_path, device=worker_device)
+    solver = SimulatedAnnealingSolver(config_path, device=worker_device)
 
     task_type = TASK_TYPE.get(benchmark_name, "math")
     questions, gold_answers = runner.load_benchmark(benchmark_name)
@@ -388,6 +390,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     runner = BenchmarkRunner()
+    selected_device = str(resolve_device(args.device or runner.config.get("evaluation", {}).get("device")))
     if args.subset_size is not None:
         runner.subset_size = args.subset_size
     if args.full:
@@ -398,9 +401,12 @@ def main():
     if unknown:
         raise ValueError(f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}")
 
-    use_batch = not args.no_batch and torch.cuda.is_available()
+    use_batch = not args.no_batch and selected_device.startswith("cuda") and torch.cuda.is_available()
     # Use smaller default batch size (4) to prevent OOM errors; can be overridden with --batch-size
     batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 4)
+
+    print(f"Benchmark device: {selected_device}")
+    print(f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {torch.cuda.device_count()}")
 
     if args.wandb_project:
         try:
@@ -442,7 +448,7 @@ def main():
                         run_benchmark_on_gpu, gpu_id, b,
                         "config/config.yaml", args.seed,
                         runner.subset_size, runner.full_eval,
-                        use_batch, batch_size, args.use_vllm,
+                        use_batch, batch_size, args.use_vllm, args.device,
                     ))
 
             for future in tqdm(as_completed(futures), total=len(futures), desc="Multi-GPU"):
@@ -452,13 +458,17 @@ def main():
                 a = result["accuracy"]
                 print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
     else:
-        inference = InferencePipeline()
-        if args.use_vllm:
-            inference.config["model"]["use_vllm"] = True
-        sampler = DiverseSampler()
-        verifier = ReasonVerifier()
-        qubo_builder = QUBOBuilder()
-        solver = SimulatedAnnealingSolver()
+        inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
+        sampler = DiverseSampler(device=selected_device)
+        verifier = ReasonVerifier(device=selected_device)
+        qubo_builder = QUBOBuilder(device=selected_device)
+        solver = SimulatedAnnealingSolver(device=selected_device)
+
+        print(f"Inference model device: {inference.model_input_device if not inference.use_vllm else inference.device}")
+        print(f"Generation device: {inference.generation_input_device if not inference.use_vllm else inference.device}")
+        print(f"Sampler device: {sampler.device}")
+        print(f"Verifier device: {verifier.device}")
+        print(f"Solver device: {solver.device}")
 
         csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
         fieldnames = [
@@ -632,7 +642,7 @@ def main():
         "seed": args.seed,
         "benchmarks": benchmark_list,
         "model": cfg.get("model", {}).get("name", "unknown"),
-        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "device": selected_device,
         "use_batch": use_batch,
         "batch_size": batch_size,
         "use_vllm": args.use_vllm,
