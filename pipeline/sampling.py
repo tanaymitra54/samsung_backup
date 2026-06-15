@@ -11,7 +11,7 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
-from pipeline.device_utils import hf_device_map_value, resolve_device
+from pipeline.device_utils import resolve_device
 
 
 class DiverseSampler:
@@ -71,7 +71,7 @@ class DiverseSampler:
             "low_cpu_mem_usage": True,
         }
         if self.device.type == "cuda":
-            model_kwargs["device_map"] = {"": hf_device_map_value(self.device)}
+            model_kwargs["device_map"] = "auto"
             model_kwargs["torch_dtype"] = torch.float16
             if load_in_4bit:
                 bnb_config = BitsAndBytesConfig(

@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from pipeline.device_utils import candidate_cuda_devices, hf_device_map_value, resolve_device
+from pipeline.device_utils import candidate_cuda_devices, resolve_device
 
 
 class InferencePipeline:
@@ -48,7 +48,7 @@ class InferencePipeline:
             "low_cpu_mem_usage": True,
         }
         if self.device.type == "cuda":
-            model_kwargs["device_map"] = {"": hf_device_map_value(self.device)}
+            model_kwargs["device_map"] = "auto"
             if load_in_4bit:
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,

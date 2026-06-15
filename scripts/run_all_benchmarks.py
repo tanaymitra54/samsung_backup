@@ -391,12 +391,19 @@ def run_benchmark_on_gpu(
 
 def main():
     args = parse_args()
+    requested_device = args.device
+    if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
+        physical_gpu = requested_device.split(":", 1)[1]
+        os.environ["CUDA_VISIBLE_DEVICES"] = physical_gpu
+        selected_device = "cuda:0"
+    else:
+        selected_device = requested_device
     set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     runner = BenchmarkRunner()
-    selected_device = str(resolve_device(args.device or runner.config.get("evaluation", {}).get("device")))
+    selected_device = str(resolve_device(selected_device or runner.config.get("evaluation", {}).get("device")))
     if args.subset_size is not None:
         runner.subset_size = args.subset_size
     if args.full:
@@ -411,7 +418,10 @@ def main():
     # Use smaller default batch size (4) to prevent OOM errors; can be overridden with --batch-size
     batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 4)
 
-    print(f"Benchmark device: {selected_device}")
+    if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
+        print(f"Benchmark device: {requested_device} -> visible as {selected_device}")
+    else:
+        print(f"Benchmark device: {selected_device}")
     print(f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {torch.cuda.device_count()}")
 
     if args.wandb_project:
