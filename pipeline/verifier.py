@@ -15,10 +15,14 @@ class ReasonVerifier:
         self.math_mode = verifier_cfg["math_mode"]
         self.nli_threshold = verifier_cfg["nli_threshold"]
 
+        device_map = verifier_cfg.get("device_map_verifier", "auto")
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.nli_model = AutoModelForSequenceClassification.from_pretrained(
-            verifier_cfg["nli_model"]
-        ).to(self.device)
+            verifier_cfg["nli_model"],
+            device_map=device_map if self.device == "cuda" else None,
+        )
+        if self.device != "cuda":
+            self.nli_model = self.nli_model.to(self.device)
         self.nli_tokenizer = AutoTokenizer.from_pretrained(
             verifier_cfg["nli_model"]
         )

@@ -4,7 +4,11 @@ import random
 import numpy as np
 from pathlib import Path
 from typing import Optional
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
 
 
 class DiverseSampler:
@@ -24,12 +28,39 @@ class DiverseSampler:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        model_kwargs = {
+            "cache_dir": model_cfg.get("cache_dir"),
+            "device_map": "auto" if self.device == "cuda" else None,
+        }
+
+        if self.device == "cuda":
+            if model_cfg.get("load_in_4bit"):
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=getattr(
+                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                    ),
+                    bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
+                    bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
+                )
+                model_kwargs["quantization_config"] = bnb_config
+                model_kwargs["torch_dtype"] = getattr(
+                    torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                )
+            else:
+                model_kwargs["torch_dtype"] = torch.float16
+
+            attn_impl = model_cfg.get("attn_implementation")
+            if attn_impl:
+                model_kwargs["attn_implementation"] = attn_impl
+        else:
+            model_kwargs["torch_dtype"] = torch.float32
+
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_cfg["name"],
-            cache_dir=model_cfg.get("cache_dir"),
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-            device_map="auto" if self.device == "cuda" else None,
-        ).to(self.device)
+            model_cfg["name"], **model_kwargs
+        )
+        if self.device == "cpu":
+            self.model = self.model.to(self.device)
         self.model.eval()
 
         self.num_answers = pipe_cfg["num_answers"]

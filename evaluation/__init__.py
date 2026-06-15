@@ -163,3 +163,57 @@ class BenchmarkRunner:
             print(f"  {benchmark_name}: {accuracy:.2%}")
 
         return results
+
+    def run_all_batched(
+        self,
+        greedy_fn,
+        cot_fn,
+        qubo_fn,
+        batch_fn_greedy=None,
+        batch_fn_cot=None,
+        batch_size: int = 8,
+    ) -> dict:
+        results = {}
+        for benchmark_name in self.benchmarks:
+            print(f"Running {benchmark_name} (batched, size={batch_size})...")
+            questions, answers = self.load_benchmark(benchmark_name)
+
+            preds_greedy = []
+            preds_cot = []
+            preds_qubo = []
+
+            for i in range(0, len(questions), batch_size):
+                batch_q = questions[i:i + batch_size]
+                if batch_fn_greedy:
+                    preds_greedy.extend(batch_fn_greedy(batch_q))
+                else:
+                    for q in batch_q:
+                        preds_greedy.append(greedy_fn(q))
+
+                if batch_fn_cot:
+                    preds_cot.extend(batch_fn_cot(batch_q))
+                else:
+                    for q in batch_q:
+                        preds_cot.append(cot_fn(q))
+
+                for q in batch_q:
+                    preds_qubo.append(qubo_fn(q))
+
+            if benchmark_name in {"mmlu", "arc_challenge"}:
+                acc_g = self.compute_accuracy_mcq(preds_greedy, answers)
+                acc_c = self.compute_accuracy_mcq(preds_cot, answers)
+                acc_q = self.compute_accuracy_mcq(preds_qubo, answers)
+            else:
+                acc_g = self.compute_accuracy(preds_greedy, answers)
+                acc_c = self.compute_accuracy(preds_cot, answers)
+                acc_q = self.compute_accuracy(preds_qubo, answers)
+
+            results[benchmark_name] = {
+                "accuracy": {"greedy": acc_g, "cot": acc_c, "qubo": acc_q},
+                "num_samples": len(questions),
+                "abs_gain_vs_greedy": acc_q - acc_g,
+                "cot_gain_over_greedy": acc_c - acc_g,
+            }
+            print(f"  [{benchmark_name}] Greedy: {acc_g:.2%} | CoT: {acc_c:.2%} | QUBO: {acc_q:.2%}")
+
+        return results
