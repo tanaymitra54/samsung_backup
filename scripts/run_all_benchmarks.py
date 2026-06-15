@@ -600,12 +600,12 @@ def main():
                     acc_g = (correct_greedy / total) * 100 if total else 0.0
                     acc_c = (correct_cot / total) * 100 if total else 0.0
                     acc_q = (correct_qubo / total) * 100 if total else 0.0
-                    bar_len = 20
+                    bar_len = 10
                     filled = int(bar_len * batch_num / batch_total)
                     bar = "█" * filled + "░" * (bar_len - filled)
                     print(
-                        f"\r\x1b[K  [{b:>12}]  {bar}  {batch_num:>3}/{batch_total} batches"
-                        f"  |  greedy: {acc_g:>5.1f}%  |  cot: {acc_c:>5.1f}%  |  qubo: {acc_q:>5.1f}%",
+                        f"\r\x1b[K  {b:>8} {bar} {batch_num:>2}/{batch_total}"
+                        f"  |  g:{acc_g:>5.1f}%  c:{acc_c:>5.1f}%  q:{acc_q:>5.1f}%",
                         end="", flush=True,
                     )
                 print()
