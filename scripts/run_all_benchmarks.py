@@ -48,6 +48,8 @@ def parse_args():
                         help="Distribute benchmarks across available GPUs")
     parser.add_argument("--wandb-project", type=str, default=None,
                         help="Weights & Biases project name for tracking")
+    parser.add_argument("--debug", action="store_true",
+                        help="Save first 5 raw model outputs for debugging")
     return parser.parse_args()
 
 
@@ -100,9 +102,6 @@ def baseline_cot(inference: InferencePipeline, question: str) -> str:
 def make_batch_greedy(inference: InferencePipeline):
     def fn(questions: list[str]) -> list[str]:
         prompts = [f"Question: {q}\nAnswer:" for q in questions]
-        use_vllm = inference.config["model"].get("use_vllm", False)
-        if use_vllm:
-            return inference.generate_answers_vllm(prompts)
         return inference.generate_answers_batch(prompts)
     return fn
 
@@ -114,9 +113,6 @@ def make_batch_cot(inference: InferencePipeline):
             f"Question: {q}\nAnswer:"
             for q in questions
         ]
-        use_vllm = inference.config["model"].get("use_vllm", False)
-        if use_vllm:
-            return inference.generate_answers_vllm(prompts)
         return inference.generate_answers_batch(prompts)
     return fn
 
@@ -516,6 +512,8 @@ def main():
                             }
                             writer.writerow(row)
                             all_rows.append(row)
+                            if args.debug and len(all_rows) <= 5:
+                                print(f"  [DEBUG #{len(all_rows)}] '{b}' gold='{gold}' raw_g='{preds_g[j]}' raw_c='{preds_c[j]}' raw_q='{pred_qubo}' ext_g='{pred_g_n}' ext_c='{pred_c_n}' ext_q='{pred_q_n}' correct=({c_g},{c_c},{c_q})")
                     except Exception as e:
                         failed += len(batch_q)
                         for j in range(len(batch_q)):

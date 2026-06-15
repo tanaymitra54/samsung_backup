@@ -71,12 +71,14 @@ class DiverseSampler:
         self.top_p = pipe_cfg["top_p"]
 
     def _apply_chat_template(self, prompt: str) -> str:
-        messages = [
-            {"role": "user", "content": prompt},
-        ]
-        return self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template:
+            messages = [
+                {"role": "user", "content": prompt},
+            ]
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        return prompt
 
     def generate_with_contrastive_decode(
         self, prompt: str, temperature: float, alpha: float = 0.1
