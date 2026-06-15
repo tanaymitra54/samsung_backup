@@ -7,3 +7,4 @@ checkpoints/
 *.egg-info/
 dist/
 build/
+NOTES/ssh_keys.txt

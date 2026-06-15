@@ -1,5 +1,6 @@
 import yaml
 import numpy as np
+from itertools import combinations
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
@@ -16,8 +17,11 @@ class QUBOBuilder:
         self.diversity_bonus = qubo_cfg["diversity_bonus"]
         self.clustering_method = qubo_cfg["clustering_method"]
         self.n_clusters = min(self.max_vars, 50)
+        self.hubo_enabled = qubo_cfg.get("hubo_enabled", False)
+        self.hubo_triplet_penalty = qubo_cfg.get("hubo_triplet_penalty", 1.0)
 
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        embedder_device = qubo_cfg.get("embedder_device", "cpu")
+        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
 
     def _embed_reasons(self, reasons: list[str]) -> np.ndarray:
         return self.embedder.encode(reasons, convert_to_numpy=True)
@@ -39,7 +43,7 @@ class QUBOBuilder:
                 clusters.append(cluster_indices)
         return clusters
 
-    def build_qubo(self, samples: list[dict]) -> np.ndarray:
+    def build_qubo(self, samples: list[dict]) -> tuple[np.ndarray, list[int]]:
         reasons = [s["reason"] for s in samples]
         embeddings = self._embed_reasons(reasons)
         indices = list(range(len(reasons)))
@@ -72,3 +76,37 @@ class QUBOBuilder:
                 Q[j][i] = Q[i][j]
 
         return Q, selected_indices
+
+    def build_hubo(self, samples: list[dict]) -> tuple[np.ndarray, list[int], dict]:
+        Q, selected_indices = self.build_qubo(samples)
+        if not self.hubo_enabled:
+            return Q, selected_indices, {}
+
+        selected_embeddings = self.embedder.encode(
+            [samples[i]["reason"] for i in selected_indices], convert_to_numpy=True
+        )
+        n = len(selected_indices)
+        n_triplets = min(n, self.max_vars)
+        sim_matrix = cosine_similarity(selected_embeddings)
+
+        T = {}
+        triplet_count = 0
+        max_triplets = 100
+
+        for i, j, k in combinations(range(n_triplets), 3):
+            if triplet_count >= max_triplets:
+                break
+            triple_sim = (sim_matrix[i][j] + sim_matrix[i][k] + sim_matrix[j][k]) / 3.0
+            if triple_sim > 0.7:
+                T[(i, j, k)] = triple_sim * self.hubo_triplet_penalty
+                triplet_count += 1
+
+        return Q, selected_indices, T
+
+    def compute_hubo_energy(
+        self, state: np.ndarray, Q: np.ndarray, T: dict
+    ) -> float:
+        energy = state @ Q @ state
+        for (i, j, k), val in T.items():
+            energy += val * state[i] * state[j] * state[k]
+        return float(energy)
