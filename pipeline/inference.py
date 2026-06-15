@@ -151,12 +151,12 @@ class InferencePipeline:
         
         return answer.strip()
 
-    def generate_answers_batch(self, prompts: list[str], batch_size: int = 4) -> list[str]:
+    def generate_answers_batch(self, prompts: list[str], batch_size: int = 1) -> list[str]:
         """Generate answers for multiple prompts with memory management.
         
         Args:
             prompts: List of prompts to process
-            batch_size: Number of prompts to process at once (default 4 to prevent OOM)
+            batch_size: Number of prompts to process at once (default 1 for maximum memory safety)
         
         Returns:
             List of generated answers
@@ -170,21 +170,30 @@ class InferencePipeline:
         
         all_answers = []
         
-        # Process in smaller batches to avoid OOM
-        for batch_idx in range(0, len(chat_prompts), batch_size):
-            batch_prompts = chat_prompts[batch_idx:batch_idx + batch_size]
-            
-            # Tokenize with max_length to prevent excessive padding
-            inputs = self.tokenizer(
-                batch_prompts, 
-                padding=True, 
-                truncation=True,
-                max_length=2048,
-                return_tensors="pt"
-            ).to(self.device)
-            input_len = inputs["input_ids"].shape[1]
-            
+        # Process one prompt at a time for maximum memory safety
+        for prompt_idx, chat_prompt in enumerate(chat_prompts):
             try:
+                # Tokenize with truncation on CPU first
+                inputs = self.tokenizer(
+                    chat_prompt, 
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=2048
+                )
+                
+                # Move to device inside try block
+                try:
+                    inputs = inputs.to(self.device)
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        # Keep on CPU
+                    else:
+                        raise
+                
+                input_len = inputs["input_ids"].shape[1]
+                
                 with torch.no_grad():
                     outputs = self.model.generate(
                         **inputs,
@@ -194,47 +203,29 @@ class InferencePipeline:
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    # Try with even smaller batch on OOM
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    
-                    # Recursively call with smaller batch size
-                    if batch_size > 1:
-                        return self.generate_answers_batch(prompts, batch_size=max(1, batch_size // 2))
-                    else:
-                        # Single item OOM - try moving to CPU temporarily
-                        inputs = self.tokenizer(
-                            batch_prompts,
-                            padding=True,
-                            truncation=True,
-                            max_length=2048,
-                            return_tensors="pt"
-                        )
-                        with torch.no_grad():
-                            outputs = self.model.generate(
-                                **inputs,
-                                max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                                temperature=0.0,
-                                do_sample=False,
-                                pad_token_id=self.tokenizer.pad_token_id,
-                                eos_token_id=self.tokenizer.eos_token_id,
-                            )
-                else:
-                    raise
-            
-            # Decode answers
-            for i in range(len(batch_prompts)):
+                
+                # Decode answer
                 ans = self.tokenizer.decode(
-                    outputs[i][input_len:], skip_special_tokens=True
+                    outputs[0][input_len:], skip_special_tokens=True
                 )
                 all_answers.append(ans.strip())
-            
-            # Clean up after each batch
-            del inputs, outputs
-            torch.cuda.empty_cache()
-            gc.collect()
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    # Return empty for this prompt
+                    all_answers.append("")
+                else:
+                    raise
+            finally:
+                # Clean up after each prompt
+                if 'inputs' in locals():
+                    del inputs
+                if 'outputs' in locals():
+                    del outputs
+                torch.cuda.empty_cache()
+                gc.collect()
         
         return all_answers
 
