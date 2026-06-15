@@ -28,11 +28,15 @@ class DiverseSampler:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        self.use_vllm = model_cfg.get("use_vllm", False)
+
+        if self.use_vllm:
+            self.device = "cpu"
+
         model_kwargs = {
             "cache_dir": model_cfg.get("cache_dir"),
             "device_map": "auto" if self.device == "cuda" else None,
         }
-
         if self.device == "cuda":
             if model_cfg.get("load_in_4bit"):
                 bnb_config = BitsAndBytesConfig(
@@ -49,13 +53,11 @@ class DiverseSampler:
                 )
             else:
                 model_kwargs["torch_dtype"] = torch.float16
-
             attn_impl = model_cfg.get("attn_implementation")
             if attn_impl:
                 model_kwargs["attn_implementation"] = attn_impl
         else:
             model_kwargs["torch_dtype"] = torch.float32
-
         self.model = AutoModelForCausalLM.from_pretrained(
             model_cfg["name"], **model_kwargs
         )

@@ -21,40 +21,42 @@ class InferencePipeline:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        model_kwargs = {
-            "cache_dir": model_cfg.get("cache_dir"),
-            "device_map": "auto" if self.device == "cuda" else None,
-        }
+        self.use_vllm = model_cfg.get("use_vllm", False)
 
-        if self.device == "cuda":
-            if model_cfg.get("load_in_4bit"):
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=getattr(
-                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
-                    ),
-                    bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
-                    bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
-                )
-                model_kwargs["quantization_config"] = bnb_config
-                model_kwargs["torch_dtype"] = getattr(
-                    torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
-                )
-            else:
-                model_kwargs["torch_dtype"] = torch.float16
-
-            attn_impl = model_cfg.get("attn_implementation")
-            if attn_impl:
-                model_kwargs["attn_implementation"] = attn_impl
+        if self.use_vllm:
+            self.model = None
         else:
-            model_kwargs["torch_dtype"] = torch.float32
-
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_cfg["name"], **model_kwargs
-        )
-        if self.device == "cpu":
-            self.model = self.model.to(self.device)
-        self.model.eval()
+            model_kwargs = {
+                "cache_dir": model_cfg.get("cache_dir"),
+                "device_map": "auto" if self.device == "cuda" else None,
+            }
+            if self.device == "cuda":
+                if model_cfg.get("load_in_4bit"):
+                    bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=getattr(
+                            torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                        ),
+                        bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
+                        bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
+                    )
+                    model_kwargs["quantization_config"] = bnb_config
+                    model_kwargs["torch_dtype"] = getattr(
+                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                    )
+                else:
+                    model_kwargs["torch_dtype"] = torch.float16
+                attn_impl = model_cfg.get("attn_implementation")
+                if attn_impl:
+                    model_kwargs["attn_implementation"] = attn_impl
+            else:
+                model_kwargs["torch_dtype"] = torch.float32
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_cfg["name"], **model_kwargs
+            )
+            if self.device == "cpu":
+                self.model = self.model.to(self.device)
+            self.model.eval()
 
         self.subset_size = pipe_cfg["subset_size"]
         embedder_device = self.config.get("qubo", {}).get("embedder_device", self.device)
@@ -79,6 +81,8 @@ class InferencePipeline:
         return prompt
 
     def generate_answer(self, prompt: str) -> str:
+        if self.use_vllm:
+            return self.generate_answers_vllm([prompt])[0]
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         with torch.no_grad():
             outputs = self.model.generate(
@@ -96,6 +100,8 @@ class InferencePipeline:
         return answer.strip()
 
     def generate_answers_batch(self, prompts: list[str]) -> list[str]:
+        if self.use_vllm:
+            return self.generate_answers_vllm(prompts)
         inputs = self.tokenizer(
             prompts, padding=True, return_tensors="pt"
         ).to(self.device)

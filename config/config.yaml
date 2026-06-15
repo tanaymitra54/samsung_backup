@@ -22,7 +22,7 @@ verifier:
   math_mode: "calculator"
   nli_model: "cross-encoder/nli-distilroberta-base"
   nli_threshold: 0.5
-  device_map_verifier: "cuda"
+  device_map_verifier: "cpu"
 
 qubo:
   max_vars: 200
@@ -32,7 +32,7 @@ qubo:
   diversity_bonus: 0.5
   hubo_enabled: false
   hubo_triplet_penalty: 1.0
-  embedder_device: "cuda"
+  embedder_device: "cpu"
 
 solver:
   method: "simulated_annealing"
