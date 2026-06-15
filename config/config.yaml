@@ -1,9 +1,9 @@
 model:
-  name: "Qwen/Qwen2.5-7B-Instruct"
+  name: "Qwen/Qwen2.5-1.5B-Instruct"
   cache_dir: "./cache/models"
   load_in_4bit: false
-  attn_implementation: "flash_attention_2"
-  use_vllm: true
+  attn_implementation: "sdpa"
+  use_vllm: false
   vllm:
     dtype: "auto"
     quantization: "fp8"
@@ -20,9 +20,9 @@ pipeline:
 
 verifier:
   math_mode: "calculator"
-  nli_model: "cross-encoder/nli-distilroberta-base"
+  nli_model: "cross-encoder/nli-deberta-v3-base"
   nli_threshold: 0.5
-  device_map_verifier: "cuda"
+  device_map_verifier: null
 
 qubo:
   max_vars: 200
@@ -32,7 +32,7 @@ qubo:
   diversity_bonus: 0.5
   hubo_enabled: false
   hubo_triplet_penalty: 1.0
-  embedder_device: "cuda"
+  embedder_device: null
 
 solver:
   method: "simulated_annealing"
@@ -63,6 +63,7 @@ training:
   warmup_steps: 100
 
 evaluation:
+  device: "cuda:0"
   benchmarks:
     - "gsm8k"
     - "bbh"
@@ -71,5 +72,5 @@ evaluation:
     - "mmlu"
   subset_size: 200
   full_eval: false
-  batch_size: 32
+  batch_size: 4
   use_batched_inference: true

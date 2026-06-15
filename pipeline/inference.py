@@ -1,3 +1,4 @@
+import gc
 import yaml
 import torch
 import numpy as np
@@ -5,29 +6,57 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from pipeline.device_utils import candidate_cuda_devices, resolve_device
+
 
 class InferencePipeline:
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, use_vllm: bool | None = None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
         model_cfg = self.config["model"]
         pipe_cfg = self.config["pipeline"]
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        preferred_device = device or self.config.get("evaluation", {}).get("device")
+        self.device = resolve_device(preferred_device)
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_cfg["name"], cache_dir=model_cfg.get("cache_dir")
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        self.use_vllm = model_cfg.get("use_vllm", False) if use_vllm is None else use_vllm
+
+        if self.use_vllm:
+            self.model = None
+        else:
+            load_in_4bit = model_cfg.get("load_in_4bit", False)
+            self.model = self._load_model_with_fallbacks(model_cfg, load_in_4bit)
+            if self.device.type == "cpu":
+                self.model = self.model.to(self.device)
+            self.model.eval()
+            self.model.generation_config.do_sample = False
+            self.model.generation_config.temperature = None
+            self.model.generation_config.top_p = None
+            self.model.generation_config.top_k = None
+            self.model_input_device = self._get_model_input_device()
+            self.generation_input_device = self._get_generation_input_device()
+
+        self.subset_size = pipe_cfg["subset_size"]
+        self.max_new_tokens = pipe_cfg["max_new_tokens"]
+        self.fallback_max_new_tokens = min(pipe_cfg.get("fallback_max_new_tokens", 128), self.max_new_tokens)
+        self.fallback_max_input_tokens = pipe_cfg.get("fallback_max_input_tokens", 1024)
+        embedder_device = self.config.get("qubo", {}).get("embedder_device") or str(self.device)
+        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
+
+    def _build_model_kwargs(self, model_cfg: dict, load_in_4bit: bool) -> dict:
         model_kwargs = {
             "cache_dir": model_cfg.get("cache_dir"),
-            "device_map": "auto" if self.device == "cuda" else None,
+            "low_cpu_mem_usage": True,
         }
-
-        if self.device == "cuda":
-            if model_cfg.get("load_in_4bit"):
+        if self.device.type == "cuda":
+            model_kwargs["device_map"] = "auto"
+            if load_in_4bit:
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=getattr(
@@ -42,23 +71,52 @@ class InferencePipeline:
                 )
             else:
                 model_kwargs["torch_dtype"] = torch.float16
-
             attn_impl = model_cfg.get("attn_implementation")
             if attn_impl:
                 model_kwargs["attn_implementation"] = attn_impl
         else:
             model_kwargs["torch_dtype"] = torch.float32
+        return model_kwargs
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_cfg["name"], **model_kwargs
+    def _load_model_with_fallbacks(self, model_cfg: dict, load_in_4bit: bool):
+        candidate_devices = [self.device]
+        if self.device.type == "cuda":
+            candidate_devices = candidate_cuda_devices(str(self.device))
+
+        attempted = []
+        for candidate in candidate_devices:
+            for quantized in ([load_in_4bit] if load_in_4bit else [False, True]):
+                self.device = candidate
+                attempted.append(f"{candidate}|4bit={quantized}")
+                try:
+                    if candidate != candidate_devices[0] or quantized != load_in_4bit:
+                        print(f"Retrying main model load on {candidate} with 4-bit={quantized}...")
+                    return AutoModelForCausalLM.from_pretrained(
+                        model_cfg["name"], **self._build_model_kwargs(model_cfg, quantized)
+                    )
+                except torch.cuda.OutOfMemoryError:
+                    if candidate.type != "cuda":
+                        raise
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue
+
+        raise RuntimeError(
+            "Failed to load model on any single GPU. Attempted: " + ", ".join(attempted)
         )
-        if self.device == "cpu":
-            self.model = self.model.to(self.device)
-        self.model.eval()
 
-        self.subset_size = pipe_cfg["subset_size"]
-        embedder_device = self.config.get("qubo", {}).get("embedder_device", self.device)
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
+    def _get_model_input_device(self):
+        if self.use_vllm or self.model is None:
+            return self.device
+        try:
+            return self.model.get_input_embeddings().weight.device
+        except Exception:
+            return next(self.model.parameters()).device
+
+    def _get_generation_input_device(self):
+        if self.use_vllm or self.model is None:
+            return self.device
+        return self.model_input_device
 
     def _rank_reasons_by_relevance(self, reasons: list[str], question: str) -> list[int]:
         reason_embs = self.embedder.encode(reasons, convert_to_numpy=True)
@@ -78,45 +136,131 @@ class InferencePipeline:
         prompt += f"\nBased on these steps, answer the following question.\nQuestion: {question}\nAnswer:"
         return prompt
 
-    def generate_answer(self, prompt: str) -> str:
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                temperature=0.3,
-                top_p=0.95,
-                do_sample=False,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
+    def _apply_chat_template(self, prompt: str) -> str:
+        if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template:
+            messages = [
+                {"role": "user", "content": prompt},
+            ]
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
             )
-        answer = self.tokenizer.decode(
-            outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
-        )
-        return answer.strip()
+        return prompt
 
-    def generate_answers_batch(self, prompts: list[str]) -> list[str]:
-        inputs = self.tokenizer(
-            prompts, padding=True, return_tensors="pt"
-        ).to(self.device)
-        input_len = inputs["input_ids"].shape[1]
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                temperature=0.3,
-                top_p=0.95,
-                do_sample=False,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-        answers = []
-        for i in range(len(prompts)):
-            ans = self.tokenizer.decode(
-                outputs[i][input_len:], skip_special_tokens=True
-            )
-            answers.append(ans.strip())
-        return answers
+    def generate_answer(self, prompt: str) -> str:
+        chat_prompt = self._apply_chat_template(prompt)
+        if self.use_vllm:
+            return self.generate_answers_vllm([chat_prompt])[0]
+
+        retry_limits = [
+            (2048, self.max_new_tokens),
+            (self.fallback_max_input_tokens, self.fallback_max_new_tokens),
+            (min(self.fallback_max_input_tokens, 768), min(self.fallback_max_new_tokens, 64)),
+        ]
+
+        for max_input_tokens, max_new_tokens in retry_limits:
+            inputs = None
+            outputs = None
+            try:
+                inputs = self.tokenizer(
+                    chat_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_input_tokens,
+                ).to(self.generation_input_device)
+                with torch.inference_mode():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        use_cache=False,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+                answer = self.tokenizer.decode(
+                    outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+                )
+                return answer.strip()
+            except RuntimeError as e:
+                if "out of memory" not in str(e).lower():
+                    raise
+                torch.cuda.empty_cache()
+                gc.collect()
+            finally:
+                if inputs is not None:
+                    del inputs
+                if outputs is not None:
+                    del outputs
+                torch.cuda.empty_cache()
+                gc.collect()
+
+        return ""
+
+    def generate_answers_batch(self, prompts: list[str], batch_size: int = 1) -> list[str]:
+        """Generate answers for multiple prompts with memory management.
+        
+        Args:
+            prompts: List of prompts to process
+            batch_size: Number of prompts to process at once (default 1 for maximum memory safety)
+        
+        Returns:
+            List of generated answers
+        """
+        chat_prompts = [self._apply_chat_template(p) for p in prompts]
+        if self.use_vllm:
+            try:
+                return self.generate_answers_vllm(chat_prompts)
+            except ImportError:
+                self.use_vllm = False
+        
+        all_answers = []
+        
+        # Process one prompt at a time for maximum memory safety
+        for prompt_idx, chat_prompt in enumerate(chat_prompts):
+            try:
+                # Tokenize with truncation on CPU first
+                inputs = self.tokenizer(
+                    chat_prompt, 
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=2048
+                ).to(self.generation_input_device)
+                
+                input_len = inputs["input_ids"].shape[1]
+                
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=self.fallback_max_new_tokens,
+                        do_sample=False,
+                        use_cache=False,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+                
+                # Decode answer
+                ans = self.tokenizer.decode(
+                    outputs[0][input_len:], skip_special_tokens=True
+                )
+                all_answers.append(ans.strip())
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    # Return empty for this prompt
+                    all_answers.append("")
+                else:
+                    raise
+            finally:
+                # Clean up after each prompt
+                if 'inputs' in locals():
+                    del inputs
+                if 'outputs' in locals():
+                    del outputs
+                torch.cuda.empty_cache()
+                gc.collect()
+        
+        return all_answers
 
     def generate_answers_vllm(self, prompts: list[str]) -> list[str]:
         from vllm import LLM, SamplingParams
