@@ -20,7 +20,7 @@ pipeline:
 
 verifier:
   math_mode: "calculator"
-  nli_model: "cross-encoder/nli-distilroberta-base"
+  nli_model: "cross-encoder/nli-deberta-v3-base"
   nli_threshold: 0.5
   device_map_verifier: "cpu"
 
