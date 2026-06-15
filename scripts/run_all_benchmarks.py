@@ -254,16 +254,17 @@ def run_benchmark_on_gpu(
         runner.full_eval = True
 
     inference = InferencePipeline(config_path, device=worker_device, use_vllm=use_vllm)
+    runtime_device = str(inference.device)
 
     sampler = DiverseSampler(
         config_path,
-        device=worker_device,
+        device=runtime_device,
         shared_model=inference.model,
         shared_tokenizer=inference.tokenizer,
     )
-    verifier = ReasonVerifier(config_path, device=worker_device)
-    qubo_builder = QUBOBuilder(config_path, device=worker_device)
-    solver = SimulatedAnnealingSolver(config_path, device=worker_device)
+    verifier = ReasonVerifier(config_path, device=runtime_device)
+    qubo_builder = QUBOBuilder(config_path, device=runtime_device)
+    solver = SimulatedAnnealingSolver(config_path, device=runtime_device)
 
     task_type = TASK_TYPE.get(benchmark_name, "math")
     questions, gold_answers = runner.load_benchmark(benchmark_name)
@@ -464,15 +465,17 @@ def main():
                 print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
     else:
         inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
+        runtime_device = str(inference.device)
         sampler = DiverseSampler(
-            device=selected_device,
+            device=runtime_device,
             shared_model=inference.model,
             shared_tokenizer=inference.tokenizer,
         )
-        verifier = ReasonVerifier(device=selected_device)
-        qubo_builder = QUBOBuilder(device=selected_device)
-        solver = SimulatedAnnealingSolver(device=selected_device)
+        verifier = ReasonVerifier(device=runtime_device)
+        qubo_builder = QUBOBuilder(device=runtime_device)
+        solver = SimulatedAnnealingSolver(device=runtime_device)
 
+        print(f"Runtime device: {runtime_device}")
         print(f"Inference model device: {inference.model_input_device if not inference.use_vllm else inference.device}")
         print(f"Generation device: {inference.generation_input_device if not inference.use_vllm else inference.device}")
         print(f"Sampler device: {sampler.device}")

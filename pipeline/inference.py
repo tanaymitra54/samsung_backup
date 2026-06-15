@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from pipeline.device_utils import hf_device_map_value, resolve_device
+from pipeline.device_utils import candidate_cuda_devices, hf_device_map_value, resolve_device
 
 
 class InferencePipeline:
@@ -31,19 +31,7 @@ class InferencePipeline:
             self.model = None
         else:
             load_in_4bit = model_cfg.get("load_in_4bit", False)
-            try:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_cfg["name"], **self._build_model_kwargs(model_cfg, load_in_4bit)
-                )
-            except torch.cuda.OutOfMemoryError:
-                if self.device.type != "cuda" or load_in_4bit:
-                    raise
-                torch.cuda.empty_cache()
-                gc.collect()
-                print("CUDA OOM while loading main model, retrying with 4-bit quantization...")
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_cfg["name"], **self._build_model_kwargs(model_cfg, True)
-                )
+            self.model = self._load_model_with_fallbacks(model_cfg, load_in_4bit)
             if self.device.type == "cpu":
                 self.model = self.model.to(self.device)
             self.model.eval()
@@ -82,6 +70,33 @@ class InferencePipeline:
         else:
             model_kwargs["torch_dtype"] = torch.float32
         return model_kwargs
+
+    def _load_model_with_fallbacks(self, model_cfg: dict, load_in_4bit: bool):
+        candidate_devices = [self.device]
+        if self.device.type == "cuda":
+            candidate_devices = candidate_cuda_devices(str(self.device))
+
+        attempted = []
+        for candidate in candidate_devices:
+            for quantized in ([load_in_4bit] if load_in_4bit else [False, True]):
+                self.device = candidate
+                attempted.append(f"{candidate}|4bit={quantized}")
+                try:
+                    if candidate != candidate_devices[0] or quantized != load_in_4bit:
+                        print(f"Retrying main model load on {candidate} with 4-bit={quantized}...")
+                    return AutoModelForCausalLM.from_pretrained(
+                        model_cfg["name"], **self._build_model_kwargs(model_cfg, quantized)
+                    )
+                except torch.cuda.OutOfMemoryError:
+                    if candidate.type != "cuda":
+                        raise
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue
+
+        raise RuntimeError(
+            "Failed to load model on any single GPU. Attempted: " + ", ".join(attempted)
+        )
 
     def _get_model_input_device(self):
         if self.use_vllm or self.model is None:
