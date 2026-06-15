@@ -99,8 +99,7 @@ class InferencePipeline:
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                temperature=0.3,
-                top_p=0.95,
+                temperature=0.0,
                 do_sample=False,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
@@ -113,7 +112,10 @@ class InferencePipeline:
     def generate_answers_batch(self, prompts: list[str]) -> list[str]:
         chat_prompts = [self._apply_chat_template(p) for p in prompts]
         if self.use_vllm:
-            return self.generate_answers_vllm(chat_prompts)
+            try:
+                return self.generate_answers_vllm(chat_prompts)
+            except ImportError:
+                self.use_vllm = False
         inputs = self.tokenizer(
             chat_prompts, padding=True, return_tensors="pt"
         ).to(self.device)
@@ -122,8 +124,7 @@ class InferencePipeline:
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                temperature=0.3,
-                top_p=0.95,
+                temperature=0.0,
                 do_sample=False,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,

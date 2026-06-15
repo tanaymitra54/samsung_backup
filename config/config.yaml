@@ -3,7 +3,7 @@ model:
   cache_dir: "./cache/models"
   load_in_4bit: false
   attn_implementation: "sdpa"
-  use_vllm: true
+  use_vllm: false
   vllm:
     dtype: "auto"
     quantization: "fp8"
