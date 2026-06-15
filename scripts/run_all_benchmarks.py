@@ -16,7 +16,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from evaluation import BenchmarkRunner
-from evaluation.answer_utils import extract_predicted_answer, is_correct_prediction
+from evaluation.answer_utils import extract_predicted_answer, extract_gsm8k_gold, is_correct_prediction
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
@@ -157,7 +157,7 @@ def is_correct(pred: str, gold: str, benchmark: str) -> bool:
         extracted = extract_mcq_choice(pred)
         return bool(extracted and extracted == gold.strip().upper())
     if benchmark == "gsm8k":
-        return is_correct_prediction(pred, gold)
+        return is_correct_prediction(pred, extract_gsm8k_gold(gold))
     return pred.strip().lower() == gold.strip().lower() or gold.strip().lower() in pred.strip().lower()
 
 

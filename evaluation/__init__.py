@@ -35,15 +35,34 @@ class BenchmarkRunner:
         return questions, answers
 
     def load_bbh(self) -> tuple[list[str], list[str]]:
-        dataset = load_dataset("lukaemon/bbh", split="test")
-        if not self.full_eval:
-            dataset = dataset.select(range(min(self.subset_size, len(dataset))))
-        questions = [item["input"] for item in dataset]
-        answers = [item["target"] for item in dataset]
+        bbh_configs = [
+            "boolean_expressions", "causal_judgement", "date_understanding",
+            "disambiguation_qa", "dyck_languages", "formal_fallacies",
+            "geometric_shapes", "hyperbaton", "logical_deduction_five_objects",
+            "logical_deduction_seven_objects", "logical_deduction_three_objects",
+            "movie_recommendation", "multistep_arithmetic_two", "navigate",
+            "object_counting", "penguins_in_a_table", "reasoning_about_colored_objects",
+            "ruin_names", "salient_translation_error_detection", "snarks",
+            "sports_understanding", "temporal_sequences",
+            "tracking_shuffled_objects_five_objects",
+            "tracking_shuffled_objects_seven_objects",
+            "tracking_shuffled_objects_three_objects", "web_of_lies", "word_sorting",
+        ]
+        questions = []
+        answers = []
+        per_config = max(1, (self.subset_size if not self.full_eval else 9999) // len(bbh_configs))
+        for config in bbh_configs:
+            try:
+                dataset = load_dataset("lukaemon/bbh", config, split="test")
+                dataset = dataset.select(range(min(per_config, len(dataset))))
+                questions.extend([item["input"] for item in dataset])
+                answers.extend([item["target"] for item in dataset])
+            except Exception:
+                pass
         return questions, answers
 
     def load_strategyqa(self) -> tuple[list[str], list[str]]:
-        dataset = load_dataset("taesiri/strategy_qa", split="test")
+        dataset = load_dataset("strategy_qa", "strategy_qa", split="test")
         if not self.full_eval:
             dataset = dataset.select(range(min(self.subset_size, len(dataset))))
         questions = [item["question"] for item in dataset]
