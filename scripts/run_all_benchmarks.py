@@ -253,7 +253,7 @@ def run_benchmark_on_gpu(
         cfg["model"]["use_vllm"] = True
         inference.config = cfg
 
-    sampler = DiverseSampler(config_path, shared_model=inference.model, shared_tokenizer=inference.tokenizer)
+    sampler = DiverseSampler(config_path)
     verifier = ReasonVerifier(config_path)
     qubo_builder = QUBOBuilder(config_path)
     solver = SimulatedAnnealingSolver(config_path)
@@ -455,10 +455,7 @@ def main():
         inference = InferencePipeline()
         if args.use_vllm:
             inference.config["model"]["use_vllm"] = True
-        sampler = DiverseSampler(
-            shared_model=inference.model,
-            shared_tokenizer=inference.tokenizer,
-        )
+        sampler = DiverseSampler()
         verifier = ReasonVerifier()
         qubo_builder = QUBOBuilder()
         solver = SimulatedAnnealingSolver()
