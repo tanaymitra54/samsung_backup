@@ -465,7 +465,7 @@ def main():
                 questions, gold_answers = runner.load_benchmark(b)
             except Exception as e:
                 print(f"  Failed to load benchmark {b}: {e}")
-                summary[b] = {"error": str(e), "num_samples": 0}
+                summary[b] = {"error": str(e), "num_samples": 0, "accuracy": {"greedy": 0.0, "cot": 0.0, "qubo": 0.0}, "abs_gain_vs_greedy": 0.0, "cot_gain_over_greedy": 0.0}
                 continue
 
             task_type = TASK_TYPE.get(b, "math")

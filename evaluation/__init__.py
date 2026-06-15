@@ -62,7 +62,10 @@ class BenchmarkRunner:
         return questions, answers
 
     def load_strategyqa(self) -> tuple[list[str], list[str]]:
-        dataset = load_dataset("strategy_qa", "strategy_qa", split="test")
+        try:
+            dataset = load_dataset("wellecks/strategyqa", split="test")
+        except Exception:
+            dataset = load_dataset("bigbio/strategy_qa", "strategy_qa", split="test")
         if not self.full_eval:
             dataset = dataset.select(range(min(self.subset_size, len(dataset))))
         questions = [item["question"] for item in dataset]

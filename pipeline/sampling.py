@@ -70,10 +70,19 @@ class DiverseSampler:
         self.max_new_tokens = pipe_cfg["max_new_tokens"]
         self.top_p = pipe_cfg["top_p"]
 
+    def _apply_chat_template(self, prompt: str) -> str:
+        messages = [
+            {"role": "user", "content": prompt},
+        ]
+        return self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
     def generate_with_contrastive_decode(
         self, prompt: str, temperature: float, alpha: float = 0.1
     ) -> str:
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        chat_prompt = self._apply_chat_template(prompt)
+        inputs = self.tokenizer(chat_prompt, return_tensors="pt").to(self.device)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,

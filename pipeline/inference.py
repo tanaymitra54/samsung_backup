@@ -80,10 +80,19 @@ class InferencePipeline:
         prompt += f"\nBased on these steps, answer the following question.\nQuestion: {question}\nAnswer:"
         return prompt
 
+    def _apply_chat_template(self, prompt: str) -> str:
+        messages = [
+            {"role": "user", "content": prompt},
+        ]
+        return self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
     def generate_answer(self, prompt: str) -> str:
+        chat_prompt = self._apply_chat_template(prompt)
         if self.use_vllm:
-            return self.generate_answers_vllm([prompt])[0]
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            return self.generate_answers_vllm([chat_prompt])[0]
+        inputs = self.tokenizer(chat_prompt, return_tensors="pt").to(self.device)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -100,10 +109,11 @@ class InferencePipeline:
         return answer.strip()
 
     def generate_answers_batch(self, prompts: list[str]) -> list[str]:
+        chat_prompts = [self._apply_chat_template(p) for p in prompts]
         if self.use_vllm:
-            return self.generate_answers_vllm(prompts)
+            return self.generate_answers_vllm(chat_prompts)
         inputs = self.tokenizer(
-            prompts, padding=True, return_tensors="pt"
+            chat_prompts, padding=True, return_tensors="pt"
         ).to(self.device)
         input_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
