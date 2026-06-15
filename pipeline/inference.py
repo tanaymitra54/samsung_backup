@@ -43,6 +43,9 @@ class InferencePipeline:
             self.generation_input_device = self._get_generation_input_device()
 
         self.subset_size = pipe_cfg["subset_size"]
+        self.max_new_tokens = pipe_cfg["max_new_tokens"]
+        self.fallback_max_new_tokens = min(pipe_cfg.get("fallback_max_new_tokens", 128), self.max_new_tokens)
+        self.fallback_max_input_tokens = pipe_cfg.get("fallback_max_input_tokens", 1024)
         embedder_device = self.config.get("qubo", {}).get("embedder_device") or str(self.device)
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
 
@@ -147,61 +150,50 @@ class InferencePipeline:
         chat_prompt = self._apply_chat_template(prompt)
         if self.use_vllm:
             return self.generate_answers_vllm([chat_prompt])[0]
-        
-        # Tokenize with truncation to prevent OOM
-        inputs = self.tokenizer(
-            chat_prompt, 
-            return_tensors="pt",
-            truncation=True,
-            max_length=2048
-        ).to(self.generation_input_device)
-        
-        try:
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                    temperature=0.0,
-                    do_sample=False,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                )
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                # Clear GPU memory and retry
-                torch.cuda.empty_cache()
-                gc.collect()
-                
-                # Re-tokenize with truncation on CPU
+
+        retry_limits = [
+            (2048, self.max_new_tokens),
+            (self.fallback_max_input_tokens, self.fallback_max_new_tokens),
+            (min(self.fallback_max_input_tokens, 768), min(self.fallback_max_new_tokens, 64)),
+        ]
+
+        for max_input_tokens, max_new_tokens in retry_limits:
+            inputs = None
+            outputs = None
+            try:
                 inputs = self.tokenizer(
                     chat_prompt,
                     return_tensors="pt",
                     truncation=True,
-                    max_length=2048
+                    max_length=max_input_tokens,
                 ).to(self.generation_input_device)
-                
-                with torch.no_grad():
+                with torch.inference_mode():
                     outputs = self.model.generate(
                         **inputs,
-                        max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                        temperature=0.0,
+                        max_new_tokens=max_new_tokens,
                         do_sample=False,
+                        use_cache=False,
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )
-            else:
-                raise
-        
-        answer = self.tokenizer.decode(
-            outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
-        )
-        
-        # Clean up
-        del inputs, outputs
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        return answer.strip()
+                answer = self.tokenizer.decode(
+                    outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+                )
+                return answer.strip()
+            except RuntimeError as e:
+                if "out of memory" not in str(e).lower():
+                    raise
+                torch.cuda.empty_cache()
+                gc.collect()
+            finally:
+                if inputs is not None:
+                    del inputs
+                if outputs is not None:
+                    del outputs
+                torch.cuda.empty_cache()
+                gc.collect()
+
+        return ""
 
     def generate_answers_batch(self, prompts: list[str], batch_size: int = 1) -> list[str]:
         """Generate answers for multiple prompts with memory management.
@@ -238,9 +230,9 @@ class InferencePipeline:
                 with torch.no_grad():
                     outputs = self.model.generate(
                         **inputs,
-                        max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                        temperature=0.0,
+                        max_new_tokens=self.fallback_max_new_tokens,
                         do_sample=False,
+                        use_cache=False,
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )
