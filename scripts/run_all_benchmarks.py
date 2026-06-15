@@ -512,9 +512,12 @@ def main():
                             }
                             writer.writerow(row)
                             all_rows.append(row)
-                            if args.debug and len(all_rows) <= 5:
-                                print(f"  [DEBUG #{len(all_rows)}] '{b}' gold='{gold}' raw_g='{preds_g[j]}' raw_c='{preds_c[j]}' raw_q='{pred_qubo}' ext_g='{pred_g_n}' ext_c='{pred_c_n}' ext_q='{pred_q_n}' correct=({c_g},{c_c},{c_q})")
+                            if len(all_rows) <= 3:
+                                print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(preds_g[j][:200])}' raw_c='{repr(preds_c[j][:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
                     except Exception as e:
+                        import traceback
+                        print(f"  ⚠️  BATCH ERROR (batch {i//batch_size}): {e}")
+                        traceback.print_exc()
                         failed += len(batch_q)
                         for j in range(len(batch_q)):
                             row = {
@@ -560,7 +563,12 @@ def main():
                         }
                         writer.writerow(row)
                         all_rows.append(row)
+                        if len(all_rows) <= 3:
+                            print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(pred_greedy[:200])}' raw_c='{repr(pred_cot[:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
                     except Exception as e:
+                        import traceback
+                        print(f"  ⚠️  ERROR (question {idx}): {e}")
+                        traceback.print_exc()
                         failed += 1
                         row = {
                             "benchmark": b, "id": idx, "question": q, "gold": gold,
@@ -581,7 +589,7 @@ def main():
                 "abs_gain_vs_greedy": acc_qubo - acc_greedy,
                 "cot_gain_over_greedy": acc_cot - acc_greedy,
             }
-            print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
+            print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%} | samples={total} failed={failed}")
 
             if args.wandb_project:
                 try:
