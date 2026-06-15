@@ -247,16 +247,16 @@ def run_benchmark_on_gpu(
     if full_eval:
         runner.full_eval = True
 
-    sampler = DiverseSampler(config_path)
-    verifier = ReasonVerifier(config_path)
-    qubo_builder = QUBOBuilder(config_path)
-    solver = SimulatedAnnealingSolver(config_path)
     inference = InferencePipeline(config_path)
-
     if use_vllm:
         cfg = yaml.safe_load(open(config_path))
         cfg["model"]["use_vllm"] = True
         inference.config = cfg
+
+    sampler = DiverseSampler(config_path, shared_model=inference.model, shared_tokenizer=inference.tokenizer)
+    verifier = ReasonVerifier(config_path)
+    qubo_builder = QUBOBuilder(config_path)
+    solver = SimulatedAnnealingSolver(config_path)
 
     task_type = TASK_TYPE.get(benchmark_name, "math")
     questions, gold_answers = runner.load_benchmark(benchmark_name)
@@ -452,14 +452,16 @@ def main():
                 a = result["accuracy"]
                 print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
     else:
-        sampler = DiverseSampler()
+        inference = InferencePipeline()
+        if args.use_vllm:
+            inference.config["model"]["use_vllm"] = True
+        sampler = DiverseSampler(
+            shared_model=inference.model,
+            shared_tokenizer=inference.tokenizer,
+        )
         verifier = ReasonVerifier()
         qubo_builder = QUBOBuilder()
         solver = SimulatedAnnealingSolver()
-        inference = InferencePipeline()
-
-        if args.use_vllm:
-            inference.config["model"]["use_vllm"] = True
 
         csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
         fieldnames = [

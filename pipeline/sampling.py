@@ -12,7 +12,8 @@ from transformers import (
 
 
 class DiverseSampler:
-    def __init__(self, config_path: str = "config/config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml",
+                 shared_model=None, shared_tokenizer=None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
@@ -20,50 +21,54 @@ class DiverseSampler:
         pipe_cfg = self.config["pipeline"]
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_cfg["name"],
-            cache_dir=model_cfg.get("cache_dir"),
-            padding_side="left",
-        )
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
         self.use_vllm = model_cfg.get("use_vllm", False)
 
-        if self.use_vllm:
-            self.device = "cpu"
-
-        model_kwargs = {
-            "cache_dir": model_cfg.get("cache_dir"),
-            "device_map": "auto" if self.device == "cuda" else None,
-        }
-        if self.device == "cuda":
-            if model_cfg.get("load_in_4bit"):
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=getattr(
-                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
-                    ),
-                    bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
-                    bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
-                )
-                model_kwargs["quantization_config"] = bnb_config
-                model_kwargs["torch_dtype"] = getattr(
-                    torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
-                )
-            else:
-                model_kwargs["torch_dtype"] = torch.float16
-            attn_impl = model_cfg.get("attn_implementation")
-            if attn_impl:
-                model_kwargs["attn_implementation"] = attn_impl
+        if shared_model is not None and shared_tokenizer is not None:
+            self.model = shared_model
+            self.tokenizer = shared_tokenizer
         else:
-            model_kwargs["torch_dtype"] = torch.float32
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_cfg["name"], **model_kwargs
-        )
-        if self.device == "cpu":
-            self.model = self.model.to(self.device)
-        self.model.eval()
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_cfg["name"],
+                cache_dir=model_cfg.get("cache_dir"),
+                padding_side="left",
+            )
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+
+            if self.use_vllm:
+                self.device = "cpu"
+
+            model_kwargs = {
+                "cache_dir": model_cfg.get("cache_dir"),
+                "device_map": "auto" if self.device == "cuda" else None,
+            }
+            if self.device == "cuda":
+                if model_cfg.get("load_in_4bit"):
+                    bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=getattr(
+                            torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                        ),
+                        bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
+                        bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
+                    )
+                    model_kwargs["quantization_config"] = bnb_config
+                    model_kwargs["torch_dtype"] = getattr(
+                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                    )
+                else:
+                    model_kwargs["torch_dtype"] = torch.float16
+                attn_impl = model_cfg.get("attn_implementation")
+                if attn_impl:
+                    model_kwargs["attn_implementation"] = attn_impl
+            else:
+                model_kwargs["torch_dtype"] = torch.float32
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_cfg["name"], **model_kwargs
+            )
+            if self.device == "cpu":
+                self.model = self.model.to(self.device)
+            self.model.eval()
 
         self.num_answers = pipe_cfg["num_answers"]
         self.num_reasons = pipe_cfg["num_reasons"]
