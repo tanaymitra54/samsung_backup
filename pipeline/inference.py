@@ -1,3 +1,4 @@
+import gc
 import yaml
 import torch
 import numpy as np
@@ -109,33 +110,92 @@ class InferencePipeline:
         )
         return answer.strip()
 
-    def generate_answers_batch(self, prompts: list[str]) -> list[str]:
+    def generate_answers_batch(self, prompts: list[str], batch_size: int = 4) -> list[str]:
+        """Generate answers for multiple prompts with memory management.
+        
+        Args:
+            prompts: List of prompts to process
+            batch_size: Number of prompts to process at once (default 4 to prevent OOM)
+        
+        Returns:
+            List of generated answers
+        """
         chat_prompts = [self._apply_chat_template(p) for p in prompts]
         if self.use_vllm:
             try:
                 return self.generate_answers_vllm(chat_prompts)
             except ImportError:
                 self.use_vllm = False
-        inputs = self.tokenizer(
-            chat_prompts, padding=True, return_tensors="pt"
-        ).to(self.device)
-        input_len = inputs["input_ids"].shape[1]
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.config["pipeline"]["max_new_tokens"],
-                temperature=0.0,
-                do_sample=False,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-        answers = []
-        for i in range(len(prompts)):
-            ans = self.tokenizer.decode(
-                outputs[i][input_len:], skip_special_tokens=True
-            )
-            answers.append(ans.strip())
-        return answers
+        
+        all_answers = []
+        
+        # Process in smaller batches to avoid OOM
+        for batch_idx in range(0, len(chat_prompts), batch_size):
+            batch_prompts = chat_prompts[batch_idx:batch_idx + batch_size]
+            
+            # Tokenize with max_length to prevent excessive padding
+            inputs = self.tokenizer(
+                batch_prompts, 
+                padding=True, 
+                truncation=True,
+                max_length=2048,
+                return_tensors="pt"
+            ).to(self.device)
+            input_len = inputs["input_ids"].shape[1]
+            
+            try:
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=self.config["pipeline"]["max_new_tokens"],
+                        temperature=0.0,
+                        do_sample=False,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    # Try with even smaller batch on OOM
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    
+                    # Recursively call with smaller batch size
+                    if batch_size > 1:
+                        return self.generate_answers_batch(prompts, batch_size=max(1, batch_size // 2))
+                    else:
+                        # Single item OOM - try moving to CPU temporarily
+                        inputs = self.tokenizer(
+                            batch_prompts,
+                            padding=True,
+                            truncation=True,
+                            max_length=2048,
+                            return_tensors="pt"
+                        )
+                        with torch.no_grad():
+                            outputs = self.model.generate(
+                                **inputs,
+                                max_new_tokens=self.config["pipeline"]["max_new_tokens"],
+                                temperature=0.0,
+                                do_sample=False,
+                                pad_token_id=self.tokenizer.pad_token_id,
+                                eos_token_id=self.tokenizer.eos_token_id,
+                            )
+                else:
+                    raise
+            
+            # Decode answers
+            for i in range(len(batch_prompts)):
+                ans = self.tokenizer.decode(
+                    outputs[i][input_len:], skip_special_tokens=True
+                )
+                all_answers.append(ans.strip())
+            
+            # Clean up after each batch
+            del inputs, outputs
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        return all_answers
 
     def generate_answers_vllm(self, prompts: list[str]) -> list[str]:
         from vllm import LLM, SamplingParams

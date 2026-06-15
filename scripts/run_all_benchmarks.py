@@ -171,39 +171,57 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
         "",
         "## Accuracy Summary",
         "",
-        "| Benchmark | Samples | Greedy | CoT | QUBO | Δ vs Greedy |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Benchmark | Samples | Greedy | CoT | QUBO | Δ vs Greedy | Status |",
+        "|---|---:|---:|---:|---:|---:|---|",
     ]
     for b in config_benchmarks:
         if b not in results:
             continue
         r = results[b]
-        a = r["accuracy"]
-        lines.append(
-            f"| {b} | {r['num_samples']} "
-            f"| {a['greedy']:.2%} "
-            f"| {a['cot']:.2%} "
-            f"| {a['qubo']:.2%} "
-            f"| {r['abs_gain_vs_greedy']:+.2%} |"
-        )
+        # Check if benchmark has accuracy data or if it failed
+        if "error" in r and "accuracy" not in r:
+            lines.append(
+                f"| {b} | 0 | N/A | N/A | N/A | N/A | ❌ Failed |"
+            )
+        else:
+            a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
+            gain = r.get("abs_gain_vs_greedy", 0.0)
+            lines.append(
+                f"| {b} | {r.get('num_samples', 0)} "
+                f"| {a.get('greedy', 0.0):.2%} "
+                f"| {a.get('cot', 0.0):.2%} "
+                f"| {a.get('qubo', 0.0):.2%} "
+                f"| {gain:+.2%} | ✓ Complete |"
+            )
 
     lines.extend(["", "## Benchmark Details", ""])
     for b in config_benchmarks:
         if b not in results:
             continue
         r = results[b]
-        a = r["accuracy"]
-        lines.extend([
-            f"### {b}",
-            "",
-            f"- Samples: {r['num_samples']}",
-            f"- Greedy accuracy: {a['greedy']:.2%}",
-            f"- CoT accuracy: {a['cot']:.2%}",
-            f"- QUBO pipeline accuracy: {a['qubo']:.2%}",
-            f"- Absolute gain vs Greedy: {r['abs_gain_vs_greedy']:+.2%}",
-            f"- CoT gain over Greedy: {r['cot_gain_over_greedy']:+.2%}",
-            "",
-        ])
+        # Check if benchmark has accuracy data or if it failed
+        if "error" in r and "accuracy" not in r:
+            lines.extend([
+                f"### {b}",
+                "",
+                f"**Status: Failed**",
+                f"- Error: {r['error']}",
+                "",
+            ])
+        else:
+            a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
+            lines.extend([
+                f"### {b}",
+                "",
+                f"- Samples: {r.get('num_samples', 0)}",
+                f"- Failed samples: {r.get('failed_samples', 0)}",
+                f"- Greedy accuracy: {a.get('greedy', 0.0):.2%}",
+                f"- CoT accuracy: {a.get('cot', 0.0):.2%}",
+                f"- QUBO pipeline accuracy: {a.get('qubo', 0.0):.2%}",
+                f"- Absolute gain vs Greedy: {r.get('abs_gain_vs_greedy', 0.0):+.2%}",
+                f"- CoT gain over Greedy: {r.get('cot_gain_over_greedy', 0.0):+.2%}",
+                "",
+            ])
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -381,7 +399,8 @@ def main():
         raise ValueError(f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}")
 
     use_batch = not args.no_batch and torch.cuda.is_available()
-    batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 8)
+    # Use smaller default batch size (4) to prevent OOM errors; can be overridden with --batch-size
+    batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 4)
 
     if args.wandb_project:
         try:
