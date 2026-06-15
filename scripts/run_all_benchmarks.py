@@ -8,6 +8,21 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
+
+def _mask_single_gpu_from_argv():
+    if "--multi-gpu" in sys.argv:
+        return
+
+    for idx, arg in enumerate(sys.argv):
+        if arg == "--device" and idx + 1 < len(sys.argv):
+            device_arg = sys.argv[idx + 1]
+            if device_arg.startswith("cuda:"):
+                os.environ["CUDA_VISIBLE_DEVICES"] = device_arg.split(":", 1)[1]
+            return
+
+
+_mask_single_gpu_from_argv()
+
 import numpy as np
 import torch
 import yaml
@@ -393,8 +408,6 @@ def main():
     args = parse_args()
     requested_device = args.device
     if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
-        physical_gpu = requested_device.split(":", 1)[1]
-        os.environ["CUDA_VISIBLE_DEVICES"] = physical_gpu
         selected_device = "cuda:0"
     else:
         selected_device = requested_device
