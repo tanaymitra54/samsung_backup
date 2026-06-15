@@ -59,6 +59,7 @@ class InferencePipeline:
                 self.model = self.model.to(self.device)
             self.model.eval()
             self.model_input_device = self._get_model_input_device()
+            self.generation_input_device = self._get_generation_input_device()
 
         self.subset_size = pipe_cfg["subset_size"]
         embedder_device = self.config.get("qubo", {}).get("embedder_device", self.device)
@@ -71,6 +72,14 @@ class InferencePipeline:
             return self.model.get_input_embeddings().weight.device
         except Exception:
             return next(self.model.parameters()).device
+
+    def _get_generation_input_device(self):
+        if self.use_vllm or self.model is None:
+            return self.device
+        device_map = getattr(self.model, "hf_device_map", None)
+        if device_map and len(set(device_map.values())) > 1:
+            return torch.device("cpu")
+        return self.model_input_device
 
     def _rank_reasons_by_relevance(self, reasons: list[str], question: str) -> list[int]:
         reason_embs = self.embedder.encode(reasons, convert_to_numpy=True)
@@ -111,7 +120,7 @@ class InferencePipeline:
             return_tensors="pt",
             truncation=True,
             max_length=2048
-        ).to(self.model_input_device)
+        ).to(self.generation_input_device)
         
         try:
             with torch.no_grad():
@@ -135,7 +144,7 @@ class InferencePipeline:
                     return_tensors="pt",
                     truncation=True,
                     max_length=2048
-                ).to(self.model_input_device)
+                ).to(self.generation_input_device)
                 
                 with torch.no_grad():
                     outputs = self.model.generate(
@@ -188,7 +197,7 @@ class InferencePipeline:
                     return_tensors="pt",
                     truncation=True,
                     max_length=2048
-                ).to(self.model_input_device)
+                ).to(self.generation_input_device)
                 
                 input_len = inputs["input_ids"].shape[1]
                 
