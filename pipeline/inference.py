@@ -190,17 +190,6 @@ class InferencePipeline:
                     max_length=2048
                 ).to(self.model_input_device)
                 
-                # Move to device inside try block
-                try:
-                    inputs = inputs.to(self.device)
-                except RuntimeError as e:
-                    if "out of memory" in str(e).lower():
-                        torch.cuda.empty_cache()
-                        gc.collect()
-                        # Keep on CPU
-                    else:
-                        raise
-                
                 input_len = inputs["input_ids"].shape[1]
                 
                 with torch.no_grad():
