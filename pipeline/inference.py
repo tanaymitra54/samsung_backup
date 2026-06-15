@@ -58,10 +58,19 @@ class InferencePipeline:
             if self.device == "cpu":
                 self.model = self.model.to(self.device)
             self.model.eval()
+            self.model_input_device = self._get_model_input_device()
 
         self.subset_size = pipe_cfg["subset_size"]
         embedder_device = self.config.get("qubo", {}).get("embedder_device", self.device)
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
+
+    def _get_model_input_device(self):
+        if self.use_vllm or self.model is None:
+            return self.device
+        try:
+            return self.model.get_input_embeddings().weight.device
+        except Exception:
+            return next(self.model.parameters()).device
 
     def _rank_reasons_by_relevance(self, reasons: list[str], question: str) -> list[int]:
         reason_embs = self.embedder.encode(reasons, convert_to_numpy=True)
@@ -102,7 +111,7 @@ class InferencePipeline:
             return_tensors="pt",
             truncation=True,
             max_length=2048
-        ).to(self.device)
+        ).to(self.model_input_device)
         
         try:
             with torch.no_grad():
@@ -126,7 +135,7 @@ class InferencePipeline:
                     return_tensors="pt",
                     truncation=True,
                     max_length=2048
-                )
+                ).to(self.model_input_device)
                 
                 with torch.no_grad():
                     outputs = self.model.generate(
@@ -179,7 +188,7 @@ class InferencePipeline:
                     return_tensors="pt",
                     truncation=True,
                     max_length=2048
-                )
+                ).to(self.model_input_device)
                 
                 # Move to device inside try block
                 try:
