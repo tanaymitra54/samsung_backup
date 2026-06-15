@@ -30,35 +30,20 @@ class InferencePipeline:
         if self.use_vllm:
             self.model = None
         else:
-            model_kwargs = {
-                "cache_dir": model_cfg.get("cache_dir"),
-                "low_cpu_mem_usage": True,
-            }
-            if self.device.type == "cuda":
-                model_kwargs["device_map"] = {"": hf_device_map_value(self.device)}
-                if model_cfg.get("load_in_4bit"):
-                    bnb_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=getattr(
-                            torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
-                        ),
-                        bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
-                        bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
-                    )
-                    model_kwargs["quantization_config"] = bnb_config
-                    model_kwargs["torch_dtype"] = getattr(
-                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
-                    )
-                else:
-                    model_kwargs["torch_dtype"] = torch.float16
-                attn_impl = model_cfg.get("attn_implementation")
-                if attn_impl:
-                    model_kwargs["attn_implementation"] = attn_impl
-            else:
-                model_kwargs["torch_dtype"] = torch.float32
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_cfg["name"], **model_kwargs
-            )
+            load_in_4bit = model_cfg.get("load_in_4bit", False)
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_cfg["name"], **self._build_model_kwargs(model_cfg, load_in_4bit)
+                )
+            except torch.cuda.OutOfMemoryError:
+                if self.device.type != "cuda" or load_in_4bit:
+                    raise
+                torch.cuda.empty_cache()
+                gc.collect()
+                print("CUDA OOM while loading main model, retrying with 4-bit quantization...")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_cfg["name"], **self._build_model_kwargs(model_cfg, True)
+                )
             if self.device.type == "cpu":
                 self.model = self.model.to(self.device)
             self.model.eval()
@@ -68,6 +53,35 @@ class InferencePipeline:
         self.subset_size = pipe_cfg["subset_size"]
         embedder_device = self.config.get("qubo", {}).get("embedder_device") or str(self.device)
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
+
+    def _build_model_kwargs(self, model_cfg: dict, load_in_4bit: bool) -> dict:
+        model_kwargs = {
+            "cache_dir": model_cfg.get("cache_dir"),
+            "low_cpu_mem_usage": True,
+        }
+        if self.device.type == "cuda":
+            model_kwargs["device_map"] = {"": hf_device_map_value(self.device)}
+            if load_in_4bit:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=getattr(
+                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                    ),
+                    bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
+                    bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
+                )
+                model_kwargs["quantization_config"] = bnb_config
+                model_kwargs["torch_dtype"] = getattr(
+                    torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                )
+            else:
+                model_kwargs["torch_dtype"] = torch.float16
+            attn_impl = model_cfg.get("attn_implementation")
+            if attn_impl:
+                model_kwargs["attn_implementation"] = attn_impl
+        else:
+            model_kwargs["torch_dtype"] = torch.float32
+        return model_kwargs
 
     def _get_model_input_device(self):
         if self.use_vllm or self.model is None:
