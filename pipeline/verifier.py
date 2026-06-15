@@ -68,10 +68,15 @@ class ReasonVerifier:
 
         if expected_answer is not None:
             gold_num = self._extract_last_number(expected_answer)
-            pred_num = self._extract_last_number(predicted_answer or reason)
-            if gold_num is not None and pred_num is not None:
-                match = 1.0 if abs(pred_num - gold_num) < 0.01 else 0.0
-                return 0.6 * match + 0.4 * base
+            if gold_num is not None:
+                pred_num = self._extract_last_number(reason)
+                if pred_num is not None and abs(pred_num - gold_num) < 0.01:
+                    return 0.6 * 1.0 + 0.4 * base
+                if predicted_answer:
+                    pred_num = self._extract_last_number(predicted_answer)
+                    if pred_num is not None and abs(pred_num - gold_num) < 0.01:
+                        return 0.6 * 1.0 + 0.4 * base
+                return 0.6 * 0.0 + 0.4 * base
 
         return base
 
