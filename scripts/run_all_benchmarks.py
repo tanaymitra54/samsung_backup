@@ -255,7 +255,12 @@ def run_benchmark_on_gpu(
 
     inference = InferencePipeline(config_path, device=worker_device, use_vllm=use_vllm)
 
-    sampler = DiverseSampler(config_path, device=worker_device)
+    sampler = DiverseSampler(
+        config_path,
+        device=worker_device,
+        shared_model=inference.model,
+        shared_tokenizer=inference.tokenizer,
+    )
     verifier = ReasonVerifier(config_path, device=worker_device)
     qubo_builder = QUBOBuilder(config_path, device=worker_device)
     solver = SimulatedAnnealingSolver(config_path, device=worker_device)
@@ -459,7 +464,11 @@ def main():
                 print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
     else:
         inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
-        sampler = DiverseSampler(device=selected_device)
+        sampler = DiverseSampler(
+            device=selected_device,
+            shared_model=inference.model,
+            shared_tokenizer=inference.tokenizer,
+        )
         verifier = ReasonVerifier(device=selected_device)
         qubo_builder = QUBOBuilder(device=selected_device)
         solver = SimulatedAnnealingSolver(device=selected_device)

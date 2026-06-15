@@ -32,8 +32,10 @@ class InferencePipeline:
         else:
             model_kwargs = {
                 "cache_dir": model_cfg.get("cache_dir"),
+                "low_cpu_mem_usage": True,
             }
             if self.device.type == "cuda":
+                model_kwargs["device_map"] = {"": hf_device_map_value(self.device)}
                 if model_cfg.get("load_in_4bit"):
                     bnb_config = BitsAndBytesConfig(
                         load_in_4bit=True,
@@ -47,7 +49,6 @@ class InferencePipeline:
                     model_kwargs["torch_dtype"] = getattr(
                         torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
                     )
-                    model_kwargs["device_map"] = {"": hf_device_map_value(self.device)}
                 else:
                     model_kwargs["torch_dtype"] = torch.float16
                 attn_impl = model_cfg.get("attn_implementation")
@@ -59,8 +60,6 @@ class InferencePipeline:
                 model_cfg["name"], **model_kwargs
             )
             if self.device.type == "cpu":
-                self.model = self.model.to(self.device)
-            elif not model_cfg.get("load_in_4bit"):
                 self.model = self.model.to(self.device)
             self.model.eval()
             self.model_input_device = self._get_model_input_device()
