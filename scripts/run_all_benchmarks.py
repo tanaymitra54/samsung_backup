@@ -604,8 +604,8 @@ def main():
                     filled = int(bar_len * batch_num / batch_total)
                     bar = "█" * filled + "░" * (bar_len - filled)
                     print(
-                        f"\r  [{b:>12}]  {bar}  {batch_num:>3}/{batch_total} batches  "
-                        f"|  greedy: {acc_g:>5.1f}%  |  cot: {acc_c:>5.1f}%  |  qubo: {acc_q:>5.1f}%",
+                        f"\r\x1b[K  [{b:>12}]  {bar}  {batch_num:>3}/{batch_total} batches"
+                        f"  |  greedy: {acc_g:>5.1f}%  |  cot: {acc_c:>5.1f}%  |  qubo: {acc_q:>5.1f}%",
                         end="", flush=True,
                     )
                 print()
