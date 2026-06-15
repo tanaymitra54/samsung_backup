@@ -604,11 +604,10 @@ def main():
                     filled = int(bar_len * batch_num / batch_total)
                     bar = "█" * filled + "░" * (bar_len - filled)
                     print(
-                        f"\r\x1b[K  {b:>8} {bar} {batch_num:>2}/{batch_total}"
+                        f"  {b:>8} {bar} {batch_num:>2}/{batch_total}"
                         f"  |  g:{acc_g:>5.1f}%  c:{acc_c:>5.1f}%  q:{acc_q:>5.1f}%",
-                        end="", flush=True,
+                        flush=True,
                     )
-                print()
             else:
                 for idx, (q, gold) in enumerate(tqdm(
                     list(zip(questions, gold_answers)), desc=f"{b}", leave=False
