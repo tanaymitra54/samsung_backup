@@ -1,5 +1,5 @@
 model:
-  name: "Qwen/Qwen2.5-7B-Instruct"
+  name: "Qwen/Qwen2.5-1.5B-Instruct"
   cache_dir: "./cache/models"
   load_in_4bit: false
   attn_implementation: "sdpa"
