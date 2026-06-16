@@ -173,6 +173,7 @@ def run_qubo_pipeline(
     question: str,
     task_type: str = "math",
     gold: str = "",
+    is_mcq: bool = False,
 ) -> str:
     samples = sampler.sample(question)
     if not samples:
@@ -183,7 +184,7 @@ def run_qubo_pipeline(
     selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
     if not selected_indices:
         selected_indices = list(range(min(inference.subset_size, len(samples))))
-    return inference.run(question, selected_indices, samples)
+    return inference.run(question, selected_indices, samples, is_mcq=is_mcq)
 
 
 def extract_answer(pred: str, benchmark: str) -> str:
@@ -336,7 +337,7 @@ def run_benchmark_on_gpu(
                 for j, q in enumerate(batch_q):
                     gold = batch_gold[j]
                     pred_q = run_qubo_pipeline(
-                        sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                        sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(benchmark_name in IS_MCQ)
                     )
                     pred_qubo_n = extract_answer(pred_q, benchmark_name)
                     pred_g_n = extract_answer(preds_g[j], benchmark_name)
@@ -386,7 +387,7 @@ def run_benchmark_on_gpu(
                 pred_cot = baseline_cot(inference, q, benchmark=benchmark_name)
                 t2 = time.time()
                 pred_qubo = run_qubo_pipeline(
-                    sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                    sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(benchmark_name in IS_MCQ)
                 )
                 t3 = time.time()
                 pred_g_n = extract_answer(pred_greedy, benchmark_name)
@@ -583,7 +584,7 @@ def main():
                             tq = time.time()
                             gold = batch_gold[j]
                             pred_qubo = run_qubo_pipeline(
-                                sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                                sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(b in IS_MCQ)
                             )
                             tq_end = time.time()
                             pred_g_n = extract_answer(preds_g[j], b)
@@ -649,7 +650,7 @@ def main():
                         pred_cot = baseline_cot(inference, q, benchmark=b)
                         t2 = time.time()
                         pred_qubo = run_qubo_pipeline(
-                            sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                            sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(b in IS_MCQ)
                         )
                         t3 = time.time()
                         pred_g_n = extract_answer(pred_greedy, b)

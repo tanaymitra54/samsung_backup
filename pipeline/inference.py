@@ -125,7 +125,7 @@ class InferencePipeline:
         return np.argsort(similarities)[::-1]
 
     def build_final_prompt(
-        self, question: str, selected_reasons: list[str]
+        self, question: str, selected_reasons: list[str], is_mcq: bool = False
     ) -> str:
         K = min(self.subset_size, len(selected_reasons))
         top_reasons = selected_reasons[:K]
@@ -133,7 +133,10 @@ class InferencePipeline:
         prompt = "Here are some reasoning steps:\n"
         for i, reason in enumerate(top_reasons, 1):
             prompt += f"{i}. {reason}\n"
-        prompt += f"\nBased on these steps, answer the following question.\nQuestion: {question}\nAnswer:"
+        if is_mcq:
+            prompt += f"\nBased on these steps, output the correct answer choice (A, B, C, or D).\nQuestion: {question}\nAnswer:"
+        else:
+            prompt += f"\nBased on these steps, answer the following question.\nQuestion: {question}\nAnswer:"
         return prompt
 
     def _apply_chat_template(self, prompt: str) -> str:
@@ -283,11 +286,11 @@ class InferencePipeline:
         return [o.outputs[0].text.strip() for o in outputs]
 
     def run(
-        self, question: str, selected_indices: list[int], samples: list[dict]
+        self, question: str, selected_indices: list[int], samples: list[dict], is_mcq: bool = False
     ) -> str:
         selected_reasons = [samples[i]["reason"] for i in selected_indices]
         ranked_order = self._rank_reasons_by_relevance(selected_reasons, question)
         ordered_reasons = [selected_reasons[i] for i in ranked_order]
 
-        final_prompt = self.build_final_prompt(question, ordered_reasons)
+        final_prompt = self.build_final_prompt(question, ordered_reasons, is_mcq=is_mcq)
         return self.generate_answer(final_prompt)
