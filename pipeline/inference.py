@@ -230,7 +230,7 @@ class InferencePipeline:
                 with torch.no_grad():
                     outputs = self.model.generate(
                         **inputs,
-                        max_new_tokens=self.fallback_max_new_tokens,
+                        max_new_tokens=self.max_new_tokens,
                         do_sample=False,
                         use_cache=False,
                         pad_token_id=self.tokenizer.pad_token_id,
