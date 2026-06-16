@@ -64,7 +64,7 @@ training:
   warmup_steps: 100
 
 evaluation:
-  device: "cuda:0"
+  device: "cuda:1"
   benchmarks:
     - "gsm8k"
     - "bbh"
