@@ -1,6 +1,10 @@
 model:
-  name: "Qwen/Qwen2.5-1.5B-Instruct"
+  name: "Qwen/Qwen3.5-4B"
   cache_dir: "./cache/models"
+  candidates:
+    - "Qwen/Qwen3.5-4B"
+    - "meta-llama/Llama-3.2-3B-Instruct"
+    - "microsoft/Phi-4-mini-reasoning"
   load_in_4bit: false
   attn_implementation: "sdpa"
   use_vllm: false
