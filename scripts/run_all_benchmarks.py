@@ -95,42 +95,71 @@ def extract_mcq_choice(text: str) -> str:
         return ""
     upper = text.strip().upper()
     import re
-    direct = re.search(r"\b([A-D])\b", upper)
-    if direct:
-        return direct.group(1)
     tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-D])\b", upper)
     if tagged:
         return tagged.group(1)
+    explicit = re.search(r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-D])\b", upper)
+    if explicit:
+        return explicit.group(1)
+    direct = re.search(r"\b([A-D])\b", upper)
+    if direct:
+        return direct.group(1)
+    answer_is = re.search(r"(?:^|\s)(?:THE\s+)?ANSWER\s+IS\s+([A-D])\b", upper)
+    if answer_is:
+        return answer_is.group(1)
     return ""
 
 
-def baseline_greedy(inference: InferencePipeline, question: str) -> str:
-    prompt = f"Question: {question}\nAnswer:"
-    return inference.generate_answer(prompt)
+def _mcq_prompt(question: str) -> str:
+    return f"Question: {question}\nOutput the correct answer choice (A, B, C, or D):"
 
 
-def baseline_cot(inference: InferencePipeline, question: str) -> str:
-    prompt = (
-        "Let's think step by step and provide the final answer.\n"
+def _mcq_cot_prompt(question: str) -> str:
+    return (
+        "Let's think step by step. At the end, output the correct answer choice letter (A, B, C, or D).\n"
         f"Question: {question}\nAnswer:"
     )
+
+
+def baseline_greedy(inference: InferencePipeline, question: str, benchmark: str = "") -> str:
+    if benchmark in IS_MCQ:
+        prompt = _mcq_prompt(question)
+    else:
+        prompt = f"Question: {question}\nAnswer:"
     return inference.generate_answer(prompt)
 
 
-def make_batch_greedy(inference: InferencePipeline):
+def baseline_cot(inference: InferencePipeline, question: str, benchmark: str = "") -> str:
+    if benchmark in IS_MCQ:
+        prompt = _mcq_cot_prompt(question)
+    else:
+        prompt = (
+            "Let's think step by step and provide the final answer.\n"
+            f"Question: {question}\nAnswer:"
+        )
+    return inference.generate_answer(prompt)
+
+
+def make_batch_greedy(inference: InferencePipeline, benchmark: str = ""):
     def fn(questions: list[str]) -> list[str]:
-        prompts = [f"Question: {q}\nAnswer:" for q in questions]
+        if benchmark in IS_MCQ:
+            prompts = [_mcq_prompt(q) for q in questions]
+        else:
+            prompts = [f"Question: {q}\nAnswer:" for q in questions]
         return inference.generate_answers_batch(prompts)
     return fn
 
 
-def make_batch_cot(inference: InferencePipeline):
+def make_batch_cot(inference: InferencePipeline, benchmark: str = ""):
     def fn(questions: list[str]) -> list[str]:
-        prompts = [
-            "Let's think step by step and provide the final answer.\n"
-            f"Question: {q}\nAnswer:"
-            for q in questions
-        ]
+        if benchmark in IS_MCQ:
+            prompts = [_mcq_cot_prompt(q) for q in questions]
+        else:
+            prompts = [
+                "Let's think step by step and provide the final answer.\n"
+                f"Question: {q}\nAnswer:"
+                for q in questions
+            ]
         return inference.generate_answers_batch(prompts)
     return fn
 
@@ -293,8 +322,8 @@ def run_benchmark_on_gpu(
     failed = 0
 
     if use_batch and batch_size > 1 and torch.cuda.is_available():
-        batch_greedy_fn = make_batch_greedy(inference)
-        batch_cot_fn = make_batch_cot(inference)
+        batch_greedy_fn = make_batch_greedy(inference, benchmark=benchmark_name)
+        batch_cot_fn = make_batch_cot(inference, benchmark=benchmark_name)
         for i in range(0, len(questions), batch_size):
             batch_q = questions[i:i + batch_size]
             batch_gold = gold_answers[i:i + batch_size]
@@ -352,9 +381,9 @@ def run_benchmark_on_gpu(
         for idx, (q, gold) in enumerate(zip(questions, gold_answers)):
             try:
                 t0 = time.time()
-                pred_greedy = baseline_greedy(inference, q)
+                pred_greedy = baseline_greedy(inference, q, benchmark=benchmark_name)
                 t1 = time.time()
-                pred_cot = baseline_cot(inference, q)
+                pred_cot = baseline_cot(inference, q, benchmark=benchmark_name)
                 t2 = time.time()
                 pred_qubo = run_qubo_pipeline(
                     sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
@@ -537,8 +566,8 @@ def main():
             failed = 0
 
             if use_batch and batch_size > 1:
-                batch_greedy_fn = make_batch_greedy(inference)
-                batch_cot_fn = make_batch_cot(inference)
+                batch_greedy_fn = make_batch_greedy(inference, benchmark=b)
+                batch_cot_fn = make_batch_cot(inference, benchmark=b)
                 batch_total = (len(questions) + batch_size - 1) // batch_size
                 for i in range(0, len(questions), batch_size):
                     batch_num = i // batch_size + 1
@@ -615,9 +644,9 @@ def main():
                 )):
                     try:
                         t0 = time.time()
-                        pred_greedy = baseline_greedy(inference, q)
+                        pred_greedy = baseline_greedy(inference, q, benchmark=b)
                         t1 = time.time()
-                        pred_cot = baseline_cot(inference, q)
+                        pred_cot = baseline_cot(inference, q, benchmark=b)
                         t2 = time.time()
                         pred_qubo = run_qubo_pipeline(
                             sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
