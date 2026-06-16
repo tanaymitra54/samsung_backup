@@ -349,7 +349,7 @@ Each question runs **16 model generations** in the sampler (4 perturbations × 4
 
 ### Q7: How do I run only one benchmark with fewer questions?
 ```bash
-python3 scripts/run_all_benchmarks.py --device cuda:1 --benchmarks gsm8k --subset-size 50
+python3 scripts/run_all_benchmarks.py --device cuda:1 --benchmarks gsm8k --subset-size 30
 ```
 
 ### Q8: How do I stop a running benchmark?
