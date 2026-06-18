@@ -1,0 +1,12 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Benchmark device: cuda:1 -> visible as cuda:0
+CUDA available: True | visible GPUs: 1
+Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files: 100%|██████████| 2/2 [00:00<00:00, 36472.21it/s]
+[transformers] The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+Loading weights:   0%|          | 0/426 [00:00<?, ?it/s]Loading weights:   0%|          | 1/426 [00:00<02:28,  2.86it/s]Loading weights:  10%|▉         | 41/426 [00:00<00:03, 113.30it/s]Loading weights:  15%|█▌        | 66/426 [00:00<00:02, 149.78it/s]Loading weights:  24%|██▍       | 104/426 [00:00<00:01, 214.11it/s]Loading weights:  31%|███       | 133/426 [00:00<00:01, 233.83it/s]Loading weights:  39%|███▉      | 167/426 [00:00<00:01, 256.34it/s]Loading weights:  46%|████▌     | 196/426 [00:01<00:00, 244.35it/s]Loading weights:  56%|█████▌    | 238/426 [00:01<00:00, 283.03it/s]Loading weights:  63%|██████▎   | 269/426 [00:01<00:00, 282.08it/s]Loading weights:  71%|███████   | 301/426 [00:01<00:00, 287.35it/s]Loading weights:  78%|███████▊  | 332/426 [00:01<00:00, 284.53it/s]Loading weights:  87%|████████▋ | 371/426 [00:01<00:00, 304.54it/s]Loading weights:  97%|█████████▋| 412/426 [00:01<00:00, 325.61it/s]Loading weights: 100%|██████████| 426/426 [00:01<00:00, 249.69it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 7220.08it/s]
+Loading weights:   0%|          | 0/202 [00:00<?, ?it/s]Loading weights: 100%|██████████| 202/202 [00:00<00:00, 6412.10it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 13170.33it/s]
+Using the latest cached version of the dataset since gsm8k couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'main' at /root/.cache/huggingface/datasets/gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866 (last modified on Mon Jun 15 16:37:57 2026).

@@ -64,7 +64,8 @@ class DiverseSampler:
         self.num_reasons = pipe_cfg["num_reasons"]
         self.max_new_tokens = pipe_cfg["max_new_tokens"]
         self.top_p = pipe_cfg["top_p"]
-        self.sampling_max_new_tokens = min(pipe_cfg.get("sampling_max_new_tokens", 64), self.max_new_tokens)
+        # Use config value directly, capped at max_new_tokens
+        self.sampling_max_new_tokens = min(pipe_cfg.get("sampling_max_new_tokens", 256), self.max_new_tokens)
         self.sampling_max_input_tokens = pipe_cfg.get("sampling_max_input_tokens", 768)
 
     def _build_model_kwargs(self, model_cfg: dict, load_in_4bit: bool) -> dict:

@@ -8,3 +8,5 @@ checkpoints/
 dist/
 build/
 NOTES/ssh_keys.txt
+
+.venv/
