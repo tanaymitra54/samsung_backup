@@ -1,0 +1,134 @@
+Benchmark device: cuda:1 -> visible as cuda:0
+CUDA available: True | visible GPUs: 1
+
+======================================================================
+INITIALIZATION
+======================================================================
+[1/6] Loading inference model...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/434 [00:00<?, ?it/s]Loading weights:   0%|          | 1/434 [00:00<00:56,  7.61it/s]Loading weights:   9%|▉         | 40/434 [00:00<00:02, 192.86it/s]Loading weights:  19%|█▉        | 83/434 [00:00<00:01, 288.71it/s]Loading weights:  28%|██▊       | 123/434 [00:00<00:01, 309.67it/s]Loading weights:  37%|███▋      | 159/434 [00:00<00:00, 306.00it/s]Loading weights:  48%|████▊     | 207/434 [00:00<00:00, 345.45it/s]Loading weights:  56%|█████▋    | 245/434 [00:00<00:00, 350.08it/s]Loading weights:  67%|██████▋   | 291/434 [00:00<00:00, 381.09it/s]Loading weights:  76%|███████▌  | 330/434 [00:01<00:00, 370.97it/s]Loading weights:  86%|████████▋ | 375/434 [00:01<00:00, 380.78it/s]Loading weights:  95%|█████████▌| 414/434 [00:01<00:00, 374.71it/s]Loading weights: 100%|██████████| 434/434 [00:01<00:00, 341.51it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 6094.05it/s]
+[2/6] Loading sampler (sharing model)...
+[3/6] Loading verifier...
+Loading weights:   0%|          | 0/202 [00:00<?, ?it/s]Loading weights: 100%|██████████| 202/202 [00:00<00:00, 9688.28it/s]
+[4/6] Loading QUBO builder...
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 9325.30it/s]
+[5/6] Loading solver...
+[6/6] Initialization complete!
+
+Runtime device: cuda:0
+Inference model device: cuda:0
+Generation device: cuda:0
+Sampler device: cuda:0
+Verifier device: cuda:0
+Solver device: cuda:0
+
+============================================================
+Benchmark: gsm8k
+============================================================
+  [STAGE 1/5] Loading benchmark data...
+Using the latest cached version of the dataset since gsm8k couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'main' at /root/.cache/huggingface/datasets/gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866 (last modified on Mon Jun 15 16:37:57 2026).
+  ✓ Loaded 20 questions
+  [STAGE 2/5] Starting evaluation...
+  Using per-question inference (no batching)
+  [Question 1/20] Processing...
+    → Greedy... 3.1s
+    → CoT... 2.0s
+    → QUBO pipeline... 5.4s
+  [DEBUG #1] gsm8k gold='Janet sells 16 - 3 - 4 = <<16-3-4=9>>9 duck eggs a day.
+She makes 9 * 2 = $<<9*2=18>>18 every day at the farmer’s market.
+#### 18' raw_g='"8\nTo determine how much Janet makes every day at the farmers' market, we need to follow these steps:\n\n1. Calculate the total number of eggs laid by the ducks each day.\n2. Determine how many eggs are e"' raw_c='"\\(\\boxed{6}\\)\n\nHere's the reasoning:\n\n1. **Daily Egg Production**: Janet's ducks lay 16 eggs per day.\n2. **Eggs Used for Breakfast**: Janet eats 3 eggs for breakfast each day.\n3. **Eggs Used for Muffi"' ext_g='8' ext_c='6'
+  [Question 2/20] Processing...
+    → Greedy... 1.4s
+    → CoT... 1.5s
+    → QUBO pipeline... 5.6s
+  [DEBUG #2] gsm8k gold='It takes 2/2=<<2/2=1>>1 bolt of white fiber
+So the total amount of fabric is 2+1=<<2+1=3>>3 bolts of fabric
+#### 3' raw_g=''3\n\nTo determine the total number of bolts of fiber needed for the robe, we need to break down the problem step by step.\n\n1. Identify the amount of blue fiber needed:\n   - The robe requires 2 bolts of '' raw_c='"3\n\nHere's the reasoning:\n\n1. We know that a bolt of blue fiber is required for the robe.\n2. A bolt of white fiber is required, which is half the amount of blue fiber.\n\nLet's denote:\n- \\( B \\) as the n"' ext_g='3' ext_c='3'
+  [Question 3/20] Processing...
+    → Greedy... 1.9s
+    → CoT... 1.9s
+    → QUBO pipeline... 6.9s
+  [DEBUG #3] gsm8k gold='The cost of the house and repairs came out to 80,000+50,000=$<<80000+50000=130000>>130,000
+He increased the value of the house by 80,000*1.5=<<80000*1.5=120000>>120,000
+So the new value of the house is 120,000+80,000=$<<120000+80000=200000>>200,000
+So he made a profit of 200,000-130,000=$<<200000-130000=70000>>70,000
+#### 70000' raw_g=''32000\n\nTo determine the profit Josh made from flipping the house, we need to follow these steps:\n\n1. **Calculate the new value of the house after repairs:**\n   - The original value of the house is $80'' raw_c=''30000\n\n1. **Initial Cost of the House**: \n   Josh initially buys the house for $80,000.\n\n2. **Cost of Repairs**:\n   Josh spends an additional $50,000 on repairs.\n\n3. **Total Initial Investment**:'' ext_g='32000' ext_c='30000'
+  [Question 4/20] Processing...
+    → Greedy... 1.4s
+    → CoT... 1.4s
+    → QUBO pipeline... 5.1s
+  [Question 5/20] Processing...
+    → Greedy... 1.3s
+    → CoT... 1.5s
+    → QUBO pipeline... 5.0s
+  [Question 6/20] Processing...
+    → Greedy... 1.3s
+    → CoT... 1.3s
+    → QUBO pipeline... 5.0s
+  [Question 7/20] Processing...
+    → Greedy... 1.3s
+    → CoT... 1.3s
+    → QUBO pipeline.../root/24BCE5561_samsung/26ARS05VITC_Quantum-inspired_Annealing_for_Multi-stage_Reasoning/.venv/lib/python3.12/site-packages/sklearn/base.py:1403: ConvergenceWarning: Number of distinct clusters (3) found smaller than n_clusters (4). Possibly due to duplicate points in X.
+  return fit_method(estimator, *args, **kwargs)
+ 5.2s
+  [Question 8/20] Processing...
+    → Greedy... 1.4s
+    → CoT... 1.5s
+    → QUBO pipeline... 5.2s
+  [Question 9/20] Processing...
+    → Greedy... 1.3s
+    → CoT... 1.4s
+    → QUBO pipeline... 6.2s
+  [Question 10/20] Processing...
+    → Greedy... 1.3s
+    → CoT... 1.3s
+    → QUBO pipeline... 6.3s
+  [Question 11/20] Processing...
+    → Greedy... 1.5s
+    → CoT... 1.9s
+    → QUBO pipeline... 6.1s
+  [Question 12/20] Processing...
+    → Greedy... 1.5s
+    → CoT... 1.4s
+    → QUBO pipeline... 5.1s
+  [Question 13/20] Processing...
+    → Greedy... 1.4s
+    → CoT... 1.3s
+    → QUBO pipeline... 5.6s
+  [Question 14/20] Processing...
+    → Greedy... 1.8s
+    → CoT... 2.0s
+    → QUBO pipeline... 5.9s
+  [Question 15/20] Processing...
+    → Greedy... 1.4s
+    → CoT... 1.4s
+    → QUBO pipeline... 5.6s
+  [Question 16/20] Processing...
+    → Greedy... 2.0s
+    → CoT... 1.9s
+    → QUBO pipeline... 5.2s
+  [Question 17/20] Processing...
+    → Greedy... 1.3s
+    → CoT... 1.3s
+    → QUBO pipeline... 5.2s
+  [Question 18/20] Processing...
+    → Greedy... 1.4s
+    → CoT... 1.4s
+    → QUBO pipeline... 5.2s
+  [Question 19/20] Processing...
+    → Greedy... 1.4s
+    → CoT... 1.3s
+    → QUBO pipeline... 4.9s
+  [Question 20/20] Processing...
+    → Greedy... 1.3s
+    → CoT... 1.4s
+    → QUBO pipeline... 5.0s
+  [gsm8k] Greedy: 20.00% | CoT: 25.00% | QUBO: 0.00% | samples=20 failed=0
+
+============================================================
+Wrote: outputs/qwen25_3b_test/all_benchmarks_20260617_041233.json
+Wrote: outputs/qwen25_3b_test/all_benchmarks_20260617_041233.md
+============================================================

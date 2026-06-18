@@ -1,0 +1,140 @@
+
+======================================================================
+  QUBO Pipeline Benchmarking - Setup Verification
+======================================================================
+
+======================================================================
+  1. Configuration Check
+======================================================================
+✅ Model: Qwen/Qwen3.5-4B
+✅ Target Device: cuda:1
+✅ Samples per question: 4 × 4 = 16
+✅ Temperature range: [0.3, 0.9]
+✅ Max new tokens: 256
+✅ QUBO max vars: 200
+✅ Penalty weight: 2.0
+✅ Solver GPU enabled: True
+✅ Parallel reads: 1024
+✅ Benchmarks configured: gsm8k, bbh, strategyqa, arc_challenge, mmlu
+✅ Subset size: 200
+✅ Batch size: 4
+
+======================================================================
+  2. GPU Availability Check
+======================================================================
+✅ CUDA available: 12.1
+✅ Number of GPUs: 2
+
+  GPU 0: NVIDIA H100 PCIe
+    Total memory: 79.11 GB
+    Free memory: 79.11 GB
+    Currently allocated: 0.00 GB
+    Currently reserved: 0.00 GB
+
+  GPU 1: NVIDIA H100 PCIe
+    Total memory: 79.11 GB
+    Free memory: 79.11 GB
+    Currently allocated: 0.00 GB
+    Currently reserved: 0.00 GB
+    ✅ GPU 1 has sufficient free memory for Qwen3.5-4B
+
+======================================================================
+  3. Dependencies Check
+======================================================================
+✅ PyTorch
+✅ HuggingFace Transformers
+✅ HuggingFace Datasets
+✅ Sentence Transformers
+✅ scikit-learn
+✅ PyYAML
+✅ NumPy
+✅ tqdm
+
+Optional dependencies:
+⚠️  vLLM (optional for faster inference) - not installed
+✅ Weights & Biases (optional for tracking)
+✅ BitsAndBytes (optional for 4-bit quantization)
+
+======================================================================
+  4. Model Cache Check
+======================================================================
+✅ Found 2 Qwen model(s) in cache:
+   - models--Qwen--Qwen2.5-1.5B-Instruct
+   - models--Qwen--Qwen3.5-4B
+
+======================================================================
+  5. Output Directory Check
+======================================================================
+✅ Output directory: /root/24BCE5561_samsung/26ARS05VITC_Quantum-inspired_Annealing_for_Multi-stage_Reasoning/outputs
+✅ Found 1 existing result file(s)
+   Most recent: all_benchmarks_20260617_001349.json
+
+======================================================================
+  6. Pipeline Modules Check
+======================================================================
+✅ pipeline.sampling
+✅ pipeline.verifier
+✅ pipeline.qubo_builder
+✅ pipeline.solver
+✅ pipeline.inference
+✅ evaluation
+
+======================================================================
+  7. Runtime Estimation
+======================================================================
+Estimated time per question: ~9.1 seconds
+
+Breakdown:
+  - sampling: 8.0s
+  - verification: 0.3s
+  - qubo_building: 0.2s
+  - solving: 0.1s
+  - final_inference: 0.5s
+
+Total for 4 benchmark(s) × 200 questions:
+  Estimated time: ~121 minutes (2.0 hours)
+  (Actual time may vary based on model speed and GPU load)
+
+======================================================================
+  8. Recommended Commands
+======================================================================
+
+# Quick test (10 samples, 2 benchmarks):
+python scripts/run_all_benchmarks.py \
+  --device cuda:1 \
+  --subset-size 10 \
+  --benchmarks gsm8k mmlu \
+  --seed 42
+
+# Medium test (50 samples, all benchmarks except strategyqa):
+python scripts/run_all_benchmarks.py \
+  --device cuda:1 \
+  --subset-size 50 \
+  --benchmarks gsm8k mmlu arc_challenge bbh \
+  --seed 42
+
+# Full benchmark (200 samples as configured):
+python scripts/run_all_benchmarks.py \
+  --device cuda:1 \
+  --subset-size 200 \
+  --benchmarks gsm8k mmlu arc_challenge bbh \
+  --seed 42 \
+  --output-dir outputs/qwen35_4b_full
+
+# Monitor GPU usage during run:
+watch -n 1 nvidia-smi
+
+======================================================================
+  Summary
+======================================================================
+✅ PASS - Configuration
+✅ PASS - GPU
+✅ PASS - Dependencies
+✅ PASS - Model Cache
+✅ PASS - Output Directory
+✅ PASS - Pipeline Modules
+
+======================================================================
+✅ ALL CHECKS PASSED - Ready to run benchmarks!
+======================================================================
+

@@ -1,5 +1,5 @@
 model:
-  name: "Qwen/Qwen2.5-1.5B-Instruct"
+  name: "Qwen/Qwen2.5-3B-Instruct"
   cache_dir: "./cache/models"
   load_in_4bit: false
   attn_implementation: "sdpa"
@@ -64,7 +64,7 @@ training:
   warmup_steps: 100
 
 evaluation:
-  device: "cuda:0"
+  device: "cuda:1"
   benchmarks:
     - "gsm8k"
     - "bbh"

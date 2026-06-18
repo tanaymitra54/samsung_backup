@@ -1,0 +1,94 @@
+Benchmark device: cuda:1 -> visible as cuda:0
+CUDA available: True | visible GPUs: 1
+
+======================================================================
+INITIALIZATION
+======================================================================
+[1/6] Loading inference model...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files: 100%|██████████| 2/2 [00:00<00:00, 32640.50it/s]
+[transformers] The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+Loading weights:   0%|          | 0/426 [00:00<?, ?it/s]Loading weights:   0%|          | 1/426 [00:00<02:05,  3.39it/s]Loading weights:  10%|▉         | 41/426 [00:00<00:02, 132.44it/s]Loading weights:  19%|█▊        | 79/426 [00:00<00:01, 201.10it/s]Loading weights:  25%|██▌       | 107/426 [00:00<00:01, 215.64it/s]Loading weights:  35%|███▌      | 151/426 [00:00<00:01, 274.07it/s]Loading weights:  44%|████▎     | 186/426 [00:00<00:00, 292.86it/s]Loading weights:  52%|█████▏    | 220/426 [00:00<00:00, 296.62it/s]Loading weights:  59%|█████▉    | 252/426 [00:01<00:00, 292.23it/s]Loading weights:  66%|██████▋   | 283/426 [00:01<00:00, 286.50it/s]Loading weights:  73%|███████▎  | 313/426 [00:01<00:00, 281.13it/s]Loading weights:  83%|████████▎ | 354/426 [00:01<00:00, 305.43it/s]Loading weights:  90%|█████████ | 385/426 [00:01<00:00, 285.68it/s]Loading weights:  97%|█████████▋| 415/426 [00:01<00:00, 282.08it/s]Loading weights: 100%|██████████| 426/426 [00:01<00:00, 255.48it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 4010.26it/s]
+[2/6] Loading sampler (sharing model)...
+[3/6] Loading verifier...
+Loading weights:   0%|          | 0/202 [00:00<?, ?it/s]Loading weights: 100%|██████████| 202/202 [00:00<00:00, 5622.54it/s]
+[4/6] Loading QUBO builder...
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 4586.03it/s]
+[5/6] Loading solver...
+[6/6] Initialization complete!
+
+Runtime device: cuda:0
+Inference model device: cuda:0
+Generation device: cuda:0
+Sampler device: cuda:0
+Verifier device: cuda:0
+Solver device: cuda:0
+
+============================================================
+Benchmark: gsm8k
+============================================================
+  [STAGE 1/5] Loading benchmark data...
+Using the latest cached version of the dataset since gsm8k couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'main' at /root/.cache/huggingface/datasets/gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866 (last modified on Mon Jun 15 16:37:57 2026).
+  ✓ Loaded 10 questions
+  [STAGE 2/5] Starting evaluation...
+  Using per-question inference (no batching)
+  [Question 1/10] Processing...
+    → Greedy... 9.3s
+    → CoT... 8.2s
+    → QUBO pipeline... 26.6s
+  [DEBUG #1] gsm8k gold='Janet sells 16 - 3 - 4 = <<16-3-4=9>>9 duck eggs a day.
+She makes 9 * 2 = $<<9*2=18>>18 every day at the farmer’s market.
+#### 18' raw_g=''Thinking Process:\n\n1.  **Analyze the Request:** The user wants the final answer to a word problem, presented as just the final answer number.\n\n2.  **Analyze the Problem:**\n    *   Total eggs laid per '' raw_c='"Thinking Process:\n\n1.  **Analyze the Request:** The user wants me to solve a word problem step by step. The problem involves calculating the daily earnings from selling duck eggs at a farmers' market."' ext_g='16' ext_c='16'
+  [Question 2/10] Processing...
+    → Greedy... 8.2s
+    → CoT... 8.2s
+    → QUBO pipeline... 25.5s
+  [DEBUG #2] gsm8k gold='It takes 2/2=<<2/2=1>>1 bolt of white fiber
+So the total amount of fabric is 2+1=<<2+1=3>>3 bolts of fabric
+#### 3' raw_g=''Thinking Process:\n\n1.  **Analyze the Request:** The user wants the final answer to a specific word problem, presented as just the final answer number.\n\n2.  **Analyze the Question:**\n    *   Item: A ro'' raw_c=''Thinking Process:\n\n1.  **Analyze the Request:** The user wants me to solve a word problem step by step. The problem is about calculating the total number of bolts of fiber needed for a robe.\n\n2.  **An'' ext_g='2' ext_c='2'
+  [Question 3/10] Processing...
+    → Greedy... 8.3s
+    → CoT... 8.3s
+    → QUBO pipeline... 25.6s
+  [DEBUG #3] gsm8k gold='The cost of the house and repairs came out to 80,000+50,000=$<<80000+50000=130000>>130,000
+He increased the value of the house by 80,000*1.5=<<80000*1.5=120000>>120,000
+So the new value of the house is 120,000+80,000=$<<120000+80000=200000>>200,000
+So he made a profit of 200,000-130,000=$<<200000-130000=70000>>70,000
+#### 70000' raw_g=''Thinking Process:\n\n1.  **Analyze the Request:** The user wants the final answer to a math problem, presented as just the final answer number.\n\n2.  **Analyze the Problem:**\n    *   Purchase price of th'' raw_c='"Here's a thinking process that leads to the solution:\n\n1.  **Analyze the Request:**\n    *   **Goal:** Calculate the profit Josh made from flipping a house.\n    *   **Given Information:**\n        *   P"' ext_g='80000' ext_c='80000'
+  [Question 4/10] Processing...
+    → Greedy... 8.3s
+    → CoT... 8.4s
+    → QUBO pipeline... 25.0s
+  [Question 5/10] Processing...
+    → Greedy... 8.6s
+    → CoT... 8.6s
+    → QUBO pipeline... 26.9s
+  [Question 6/10] Processing...
+    → Greedy... 8.2s
+    → CoT... 8.2s
+    → QUBO pipeline... 26.3s
+  [Question 7/10] Processing...
+    → Greedy... 8.2s
+    → CoT... 8.6s
+    → QUBO pipeline... 27.1s
+  [Question 8/10] Processing...
+    → Greedy... 7.9s
+    → CoT... 8.1s
+    → QUBO pipeline... 25.7s
+  [Question 9/10] Processing...
+    → Greedy... 8.5s
+    → CoT... 8.4s
+    → QUBO pipeline... 26.1s
+  [Question 10/10] Processing...
+    → Greedy... 8.1s
+    → CoT... 7.7s
+    → QUBO pipeline... 25.4s
+  [gsm8k] Greedy: 0.00% | CoT: 0.00% | QUBO: 10.00% | samples=10 failed=0
+
+============================================================
+Wrote: outputs/fast_test_20260617_033040/all_benchmarks_20260617_033047.json
+Wrote: outputs/fast_test_20260617_033040/all_benchmarks_20260617_033047.md
+============================================================
