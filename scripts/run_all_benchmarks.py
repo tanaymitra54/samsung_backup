@@ -95,42 +95,66 @@ def extract_mcq_choice(text: str) -> str:
         return ""
     upper = text.strip().upper()
     import re
-    direct = re.search(r"\b([A-D])\b", upper)
-    if direct:
-        return direct.group(1)
+    # Look for "ANSWER: A" or "ANSWER IS A" pattern
     tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-D])\b", upper)
     if tagged:
         return tagged.group(1)
+    # Look for explicit patterns
+    explicit = re.search(r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-D])\b", upper)
+    if explicit:
+        return explicit.group(1)
+    # Look for single letter answer
+    direct = re.search(r"\b([A-D])\b", upper)
+    if direct:
+        return direct.group(1)
     return ""
 
 
-def baseline_greedy(inference: InferencePipeline, question: str) -> str:
-    prompt = f"Question: {question}\nAnswer:"
+def _mcq_prompt(question: str) -> str:
+    return f"{question}\n\nOutput only the correct answer choice (A, B, C, or D):"
+
+
+def _mcq_cot_prompt(question: str) -> str:
+    return f"{question}\n\nLet's think step by step. At the end, output the correct answer choice letter (A, B, C, or D)."
+
+
+def baseline_greedy(inference: InferencePipeline, question: str, benchmark: str = "") -> str:
+    """Greedy baseline - direct answer without reasoning."""
+    if benchmark in IS_MCQ:
+        prompt = _mcq_prompt(question)
+    else:
+        prompt = f"{question}\n\nProvide only the final numerical answer, nothing else."
     return inference.generate_answer(prompt)
 
 
-def baseline_cot(inference: InferencePipeline, question: str) -> str:
-    prompt = (
-        "Let's think step by step and provide the final answer.\n"
-        f"Question: {question}\nAnswer:"
-    )
+def baseline_cot(inference: InferencePipeline, question: str, benchmark: str = "") -> str:
+    """Chain-of-Thought baseline with step-by-step reasoning."""
+    if benchmark in IS_MCQ:
+        prompt = _mcq_cot_prompt(question)
+    else:
+        prompt = f"{question}\n\nLet's think step by step, then provide the final answer in the format: #### [answer]"
     return inference.generate_answer(prompt)
 
 
 def make_batch_greedy(inference: InferencePipeline):
-    def fn(questions: list[str]) -> list[str]:
-        prompts = [f"Question: {q}\nAnswer:" for q in questions]
+    def fn(questions: list[str], benchmark: str = "") -> list[str]:
+        if benchmark in IS_MCQ:
+            prompts = [_mcq_prompt(q) for q in questions]
+        else:
+            prompts = [f"{q}\n\nProvide only the final numerical answer, nothing else." for q in questions]
         return inference.generate_answers_batch(prompts)
     return fn
 
 
 def make_batch_cot(inference: InferencePipeline):
-    def fn(questions: list[str]) -> list[str]:
-        prompts = [
-            "Let's think step by step and provide the final answer.\n"
-            f"Question: {q}\nAnswer:"
-            for q in questions
-        ]
+    def fn(questions: list[str], benchmark: str = "") -> list[str]:
+        if benchmark in IS_MCQ:
+            prompts = [_mcq_cot_prompt(q) for q in questions]
+        else:
+            prompts = [
+                f"{q}\n\nLet's think step by step, then provide the final answer in the format: #### [answer]"
+                for q in questions
+            ]
         return inference.generate_answers_batch(prompts)
     return fn
 
@@ -488,16 +512,32 @@ def main():
                 a = result["accuracy"]
                 print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
     else:
+        print(f"\n{'='*70}")
+        print("INITIALIZATION")
+        print(f"{'='*70}")
+        print("[1/6] Loading inference model...")
+        sys.stdout.flush()
         inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
         runtime_device = str(inference.device)
+        
+        print("[2/6] Loading sampler (sharing model)...")
+        sys.stdout.flush()
         sampler = DiverseSampler(
             device=runtime_device,
             shared_model=inference.model,
             shared_tokenizer=inference.tokenizer,
         )
+        print("[3/6] Loading verifier...")
+        sys.stdout.flush()
         verifier = ReasonVerifier(device=runtime_device)
+        print("[4/6] Loading QUBO builder...")
+        sys.stdout.flush()
         qubo_builder = QUBOBuilder(device=runtime_device)
+        print("[5/6] Loading solver...")
+        sys.stdout.flush()
         solver = SimulatedAnnealingSolver(device=runtime_device)
+        print("[6/6] Initialization complete!")
+        print("")
 
         print(f"Runtime device: {runtime_device}")
         print(f"Inference model device: {inference.model_input_device if not inference.use_vllm else inference.device}")
@@ -520,16 +560,20 @@ def main():
             print(f"\n{'='*60}")
             print(f"Benchmark: {b}")
             print(f"{'='*60}")
+            print(f"  [STAGE 1/5] Loading benchmark data...")
+            sys.stdout.flush()
 
             try:
                 questions, gold_answers = runner.load_benchmark(b)
             except Exception as e:
-                print(f"  Failed to load benchmark {b}: {e}")
+                print(f"  ❌ Failed to load benchmark {b}: {e}")
                 summary[b] = {"error": str(e), "num_samples": 0, "accuracy": {"greedy": 0.0, "cot": 0.0, "qubo": 0.0}, "abs_gain_vs_greedy": 0.0, "cot_gain_over_greedy": 0.0}
                 continue
 
             task_type = TASK_TYPE.get(b, "math")
-            print(f"  Loaded {len(questions)} questions")
+            print(f"  ✓ Loaded {len(questions)} questions")
+            print(f"  [STAGE 2/5] Starting evaluation...")
+            sys.stdout.flush()
             correct_greedy = 0
             correct_cot = 0
             correct_qubo = 0
@@ -537,6 +581,8 @@ def main():
             failed = 0
 
             if use_batch and batch_size > 1:
+                print(f"  Using batched inference (batch_size={batch_size})")
+                sys.stdout.flush()
                 batch_greedy_fn = make_batch_greedy(inference)
                 batch_cot_fn = make_batch_cot(inference)
                 batch_total = (len(questions) + batch_size - 1) // batch_size
@@ -544,19 +590,31 @@ def main():
                     batch_num = i // batch_size + 1
                     batch_q = questions[i:i + batch_size]
                     batch_gold = gold_answers[i:i + batch_size]
+                    
+                    print(f"  [Batch {batch_num}/{batch_total}] Processing questions {i+1}-{i+len(batch_q)}...")
+                    sys.stdout.flush()
+                    
                     try:
                         t0 = time.time()
+                        print(f"    → Greedy inference...", end='', flush=True)
                         preds_g = batch_greedy_fn(batch_q)
                         t1 = time.time()
+                        print(f" done ({t1-t0:.1f}s)")
+                        
+                        print(f"    → CoT inference...", end='', flush=True)
                         preds_c = batch_cot_fn(batch_q)
                         t2 = time.time()
+                        print(f" done ({t2-t1:.1f}s)")
+                        
                         for j, q in enumerate(batch_q):
+                            print(f"    → QUBO pipeline (Q{i+j+1})...", end='', flush=True)
                             tq = time.time()
                             gold = batch_gold[j]
                             pred_qubo = run_qubo_pipeline(
                                 sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
                             )
                             tq_end = time.time()
+                            print(f" done ({tq_end-tq:.1f}s)", flush=True)
                             pred_g_n = extract_answer(preds_g[j], b)
                             pred_c_n = extract_answer(preds_c[j], b)
                             pred_q_n = extract_answer(pred_qubo, b)
@@ -610,19 +668,28 @@ def main():
                         flush=True,
                     )
             else:
-                for idx, (q, gold) in enumerate(tqdm(
-                    list(zip(questions, gold_answers)), desc=f"{b}", leave=False
-                )):
+                print(f"  Using per-question inference (no batching)")
+                sys.stdout.flush()
+                for idx, (q, gold) in enumerate(list(zip(questions, gold_answers))):
+                    print(f"  [Question {idx+1}/{len(questions)}] Processing...", flush=True)
                     try:
                         t0 = time.time()
+                        print(f"    → Greedy...", end='', flush=True)
                         pred_greedy = baseline_greedy(inference, q)
                         t1 = time.time()
+                        print(f" {t1-t0:.1f}s", flush=True)
+                        
+                        print(f"    → CoT...", end='', flush=True)
                         pred_cot = baseline_cot(inference, q)
                         t2 = time.time()
+                        print(f" {t2-t1:.1f}s", flush=True)
+                        
+                        print(f"    → QUBO pipeline...", end='', flush=True)
                         pred_qubo = run_qubo_pipeline(
                             sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
                         )
                         t3 = time.time()
+                        print(f" {t3-t2:.1f}s", flush=True)
                         pred_g_n = extract_answer(pred_greedy, b)
                         pred_c_n = extract_answer(pred_cot, b)
                         pred_q_n = extract_answer(pred_qubo, b)

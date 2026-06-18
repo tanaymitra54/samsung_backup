@@ -1,0 +1,26 @@
+{
+  "timestamp": "20260618_193123",
+  "seed": 42,
+  "benchmarks": [
+    "gsm8k"
+  ],
+  "model": "Qwen/Qwen2.5-3B-Instruct",
+  "device": "cuda:0",
+  "use_batch": true,
+  "batch_size": 4,
+  "use_vllm": false,
+  "multi_gpu": false,
+  "results": {
+    "gsm8k": {
+      "accuracy": {
+        "greedy": 0.0,
+        "cot": 0.3333333333333333,
+        "qubo": 0.6666666666666666
+      },
+      "num_samples": 3,
+      "failed_samples": 0,
+      "abs_gain_vs_greedy": 0.6666666666666666,
+      "cot_gain_over_greedy": 0.3333333333333333
+    }
+  }
+}
