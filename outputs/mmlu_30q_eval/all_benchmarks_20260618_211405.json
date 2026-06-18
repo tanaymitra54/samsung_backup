@@ -1,0 +1,26 @@
+{
+  "timestamp": "20260618_211405",
+  "seed": 777,
+  "benchmarks": [
+    "mmlu"
+  ],
+  "model": "Qwen/Qwen2.5-3B-Instruct",
+  "device": "cuda:1",
+  "use_batch": true,
+  "batch_size": 8,
+  "use_vllm": false,
+  "multi_gpu": false,
+  "results": {
+    "mmlu": {
+      "accuracy": {
+        "greedy": 0.23333333333333334,
+        "cot": 0.2,
+        "qubo": 0.4
+      },
+      "num_samples": 30,
+      "failed_samples": 0,
+      "abs_gain_vs_greedy": 0.16666666666666669,
+      "cot_gain_over_greedy": -0.033333333333333326
+    }
+  }
+}
