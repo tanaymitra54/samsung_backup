@@ -66,16 +66,20 @@ class ReasonVerifier:
                 consistency = 1.0 / (1.0 + np.mean(diffs))
             base = min(1.0, consistency)
 
+        # TANAY'S FIX: Check both reason and answer fields for gold match
         if expected_answer is not None:
             gold_num = self._extract_last_number(expected_answer)
             if gold_num is not None:
+                # First check if reason contains the gold answer
                 pred_num = self._extract_last_number(reason)
                 if pred_num is not None and abs(pred_num - gold_num) < 0.01:
                     return 0.6 * 1.0 + 0.4 * base
+                # Then check predicted_answer field if provided
                 if predicted_answer:
                     pred_num = self._extract_last_number(predicted_answer)
                     if pred_num is not None and abs(pred_num - gold_num) < 0.01:
                         return 0.6 * 1.0 + 0.4 * base
+                # No match - return penalized score
                 return 0.6 * 0.0 + 0.4 * base
 
         return base

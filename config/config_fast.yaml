@@ -71,7 +71,7 @@ evaluation:
     - "strategyqa"
     - "arc_challenge"
     - "mmlu"
-  subset_size: 200
+  subset_size: 50
   full_eval: false
   batch_size: 4
   use_batched_inference: true
