@@ -22,7 +22,7 @@ class ReasonVerifier:
         self.nli_model = AutoModelForSequenceClassification.from_pretrained(
             verifier_cfg["nli_model"],
         )
-        self.nli_model = self.nli_model.to(self.device)
+        self.nli_model = self.nli_model.to("cpu")
         self.nli_tokenizer = AutoTokenizer.from_pretrained(
             verifier_cfg["nli_model"]
         )
