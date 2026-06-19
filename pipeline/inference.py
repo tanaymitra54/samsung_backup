@@ -94,7 +94,9 @@ class InferencePipeline:
                     return AutoModelForCausalLM.from_pretrained(
                         model_cfg["name"], **self._build_model_kwargs(model_cfg, quantized)
                     )
-                except torch.cuda.OutOfMemoryError:
+                except (torch.cuda.OutOfMemoryError, ValueError) as e:
+                    if "out of memory" not in str(e).lower() and "dispatched on the cpu" not in str(e).lower():
+                        raise
                     if candidate.type != "cuda":
                         raise
                     torch.cuda.empty_cache()
