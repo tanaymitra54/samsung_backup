@@ -1,14 +1,15 @@
 model:
-    name: "./cache/models/models--meta-llama--Llama-3.2-3B-Instruct/snapshots/0cb88a4f764b7a12671c53f0838cd831a0843b95"
-    cache_dir: "./cache/models"
-    load_in_4bit: false
-    attn_implementation: "sdpa"
-    use_vllm: false
-    vllm:
-        dtype: "auto"
-        quantization: "fp8"
-        tensor_parallel_size: 1
-        gpu_memory_utilization: 0.9
+
+  name: "Qwen/Qwen2.5-1.5B-Instruct"
+  cache_dir: "./cache/models"
+  load_in_4bit: false
+  attn_implementation: "sdpa"
+  use_vllm: false
+  vllm:
+    dtype: "auto"
+    quantization: "fp8"
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.9
 
 pipeline:
     num_answers: 4
