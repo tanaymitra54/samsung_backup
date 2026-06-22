@@ -1,4 +1,6 @@
-torch>=2.1.0,!=2.6.0
+# Use CUDA 12.1 wheels (compatible with driver 535 / CUDA 12.2). Do NOT pip install torch from PyPI alone.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1
 transformers>=4.40.0
 datasets>=2.14.0
 accelerate>=0.25.0

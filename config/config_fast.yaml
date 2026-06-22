@@ -1,5 +1,5 @@
 model:
-    name: "./cache/models/models--meta-llama--Llama-3.2-3B-Instruct/snapshots/0cb88a4f764b7a12671c53f0838cd831a0843b95"
+    name: "Qwen/Qwen2.5-3B-Instruct"
     cache_dir: "./cache/models"
     load_in_4bit: false
     attn_implementation: "sdpa"
@@ -75,7 +75,7 @@ evaluation:
         - "gpqa diamond"
         - "aime"
         - "mmlu pro"
-    subset_size: 200
+    subset_size: 50
     full_eval: false
     batch_size: 4
     use_batched_inference: true

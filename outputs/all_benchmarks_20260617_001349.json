@@ -1,0 +1,26 @@
+{
+  "timestamp": "20260617_001349",
+  "seed": 42,
+  "benchmarks": [
+    "gsm8k"
+  ],
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "device": "cuda:0",
+  "use_batch": true,
+  "batch_size": 1,
+  "use_vllm": false,
+  "multi_gpu": false,
+  "results": {
+    "gsm8k": {
+      "accuracy": {
+        "greedy": 1.0,
+        "cot": 1.0,
+        "qubo": 1.0
+      },
+      "num_samples": 2,
+      "failed_samples": 0,
+      "abs_gain_vs_greedy": 0.0,
+      "cot_gain_over_greedy": 0.0
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "timestamp": "20260618_231505",
+  "seed": 777,
+  "benchmarks": [
+    "gsm8k"
+  ],
+  "model": "./cache/models/models--meta-llama--Llama-3.2-3B-Instruct/snapshots/0cb88a4f764b7a12671c53f0838cd831a0843b95",
+  "device": "cuda:1",
+  "use_batch": true,
+  "batch_size": 8,
+  "use_vllm": false,
+  "multi_gpu": false,
+  "results": {
+    "gsm8k": {
+      "accuracy": {
+        "greedy": 0.16666666666666666,
+        "cot": 0.5333333333333333,
+        "qubo": 0.7
+      },
+      "num_samples": 30,
+      "failed_samples": 0,
+      "abs_gain_vs_greedy": 0.5333333333333333,
+      "cot_gain_over_greedy": 0.3666666666666667
+    }
+  }
+}

@@ -1,0 +1,66 @@
+Benchmark device: cuda:1 -> visible as cuda:0
+CUDA available: True | visible GPUs: 1
+
+======================================================================
+INITIALIZATION
+======================================================================
+[1/6] Loading inference model...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files: 100%|██████████| 2/2 [00:00<00:00, 4490.69it/s]
+[transformers] The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+Loading weights:   0%|          | 0/426 [00:00<?, ?it/s]Loading weights:   0%|          | 1/426 [00:00<02:11,  3.24it/s]Loading weights:   8%|▊         | 36/426 [00:00<00:03, 109.49it/s]Loading weights:  15%|█▌        | 66/426 [00:00<00:02, 161.99it/s]Loading weights:  23%|██▎       | 99/426 [00:00<00:01, 196.12it/s]Loading weights:  33%|███▎      | 142/426 [00:00<00:01, 250.22it/s]Loading weights:  40%|████      | 171/426 [00:00<00:00, 256.42it/s]Loading weights:  47%|████▋     | 200/426 [00:00<00:00, 265.62it/s]Loading weights:  56%|█████▋    | 240/426 [00:01<00:00, 290.57it/s]Loading weights:  65%|██████▌   | 279/426 [00:01<00:00, 309.47it/s]Loading weights:  73%|███████▎  | 312/426 [00:01<00:00, 309.37it/s]Loading weights:  83%|████████▎ | 354/426 [00:01<00:00, 337.23it/s]Loading weights:  91%|█████████▏| 389/426 [00:01<00:00, 338.45it/s]Loading weights: 100%|█████████▉| 424/426 [00:01<00:00, 334.24it/s]Loading weights: 100%|██████████| 426/426 [00:01<00:00, 261.65it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 10130.22it/s]
+[2/6] Loading sampler (sharing model)...
+[3/6] Loading verifier...
+Loading weights:   0%|          | 0/202 [00:00<?, ?it/s]Loading weights: 100%|██████████| 202/202 [00:00<00:00, 6117.63it/s]
+[4/6] Loading QUBO builder...
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 7695.70it/s]
+[5/6] Loading solver...
+[6/6] Initialization complete!
+
+Runtime device: cuda:0
+Inference model device: cuda:0
+Generation device: cuda:0
+Sampler device: cuda:0
+Verifier device: cuda:0
+Solver device: cuda:0
+
+============================================================
+Benchmark: gsm8k
+============================================================
+  [STAGE 1/5] Loading benchmark data...
+Using the latest cached version of the dataset since gsm8k couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'main' at /root/.cache/huggingface/datasets/gsm8k/main/0.0.0/740312add88f781978c0658806c59bc2815b9866 (last modified on Mon Jun 15 16:37:57 2026).
+  ✓ Loaded 3 questions
+  [STAGE 2/5] Starting evaluation...
+  Using per-question inference (no batching)
+  [Question 1/3] Processing...
+    → Greedy... 8.6s
+    → CoT... 7.9s
+    → QUBO pipeline... 24.1s
+  [DEBUG #1] gsm8k gold='Janet sells 16 - 3 - 4 = <<16-3-4=9>>9 duck eggs a day.
+She makes 9 * 2 = $<<9*2=18>>18 every day at the farmer’s market.
+#### 18' raw_g='"Here's my thought process for solving this word problem:\n\n1.  **Analyze the Request:**\n    *   **Given:**\n        *   Total eggs laid per day = 16.\n        *   Eggs eaten for breakfast = 3.\n        * "' raw_c='"Thinking Process:\n\n1.  **Analyze the Request:** The user wants to know how much money Janet makes every day at the farmers' market selling duck eggs. I need to calculate this step-by-step based on the"' ext_g='3' ext_c='2'
+  [Question 2/3] Processing...
+    → Greedy... 8.4s
+    → CoT... 8.9s
+    → QUBO pipeline... 25.7s
+  [DEBUG #2] gsm8k gold='It takes 2/2=<<2/2=1>>1 bolt of white fiber
+So the total amount of fabric is 2+1=<<2+1=3>>3 bolts of fabric
+#### 3' raw_g=''Thinking Process:\n\n1.  **Analyze the Request:** The user is asking a math word problem about the number of bolts of fiber needed to make a robe. They want the final answer.\n\n2.  **Break Down the Probl'' raw_c=''Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A word problem about fabric bolts needed for a robe.\n    *   Condition 1: Blue fiber = 2 bolts.\n    *   Condition 2: White fiber = half t'' ext_g='2' ext_c='2'
+  [Question 3/3] Processing...
+    → Greedy... 8.0s
+    → CoT... 7.7s
+    → QUBO pipeline... 24.5s
+  [DEBUG #3] gsm8k gold='The cost of the house and repairs came out to 80,000+50,000=$<<80000+50000=130000>>130,000
+He increased the value of the house by 80,000*1.5=<<80000*1.5=120000>>120,000
+So the new value of the house is 120,000+80,000=$<<120000+80000=200000>>200,000
+So he made a profit of 200,000-130,000=$<<200000-130000=70000>>70,000
+#### 70000' raw_g='"Here's my thought process for solving this word problem:\n\n1.  **Analyze the Request:**\n    *   **Scenario:** Josh flips a house.\n    *   **Initial Cost (Purchase Price):** $80,000.\n    *   **Repair Co"' raw_c='"Here's a thinking process that leads to the solution:\n\n1.  **Analyze the Request:**\n    *   **Goal:** Calculate Josh's profit from flipping a house.\n    *   **Given Information:**\n        *   Purchase"' ext_g='50' ext_c='80000'
+  [gsm8k] Greedy: 0.00% | CoT: 0.00% | QUBO: 33.33% | samples=3 failed=0
+
+============================================================
+Wrote: outputs/final_test/all_benchmarks_20260617_034521.json
+Wrote: outputs/final_test/all_benchmarks_20260617_034521.md
+============================================================
