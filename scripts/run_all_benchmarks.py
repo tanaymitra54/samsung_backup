@@ -31,11 +31,15 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from evaluation import BenchmarkRunner
-from evaluation.answer_utils import extract_predicted_answer, extract_gsm8k_gold, is_correct_prediction
+from evaluation.answer_utils import (
+    extract_gsm8k_gold,
+    extract_predicted_answer,
+    is_correct_prediction,
+)
+from pipeline.device_utils import resolve_device
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
-from pipeline.device_utils import resolve_device
 from pipeline.solver import SimulatedAnnealingSolver
 from pipeline.verifier import ReasonVerifier
 
@@ -44,30 +48,57 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run QUBO pipeline across all configured benchmarks"
     )
-    parser.add_argument("--subset-size", type=int, default=None,
-                        help="Override config subset_size")
-    parser.add_argument("--full", action="store_true",
-                        help="Run on full datasets (ignore subset_size)")
-    parser.add_argument("--output-dir", default="outputs",
-                        help="Directory for output files")
-    parser.add_argument("--benchmarks", nargs="*", default=None,
-                        help="Specific benchmarks to run (default: all in config)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducible runs")
-    parser.add_argument("--batch-size", type=int, default=None,
-                        help="Batch size for batched inference")
-    parser.add_argument("--no-batch", action="store_true",
-                        help="Disable batched inference (force per-question)")
-    parser.add_argument("--use-vllm", action="store_true",
-                        help="Use vLLM backend for inference")
-    parser.add_argument("--device", type=str, default=None,
-                        help="Single device for benchmark execution (default: evaluation.device or cuda:0)")
-    parser.add_argument("--multi-gpu", action="store_true",
-                        help="Distribute benchmarks across available GPUs")
-    parser.add_argument("--wandb-project", type=str, default=None,
-                        help="Weights & Biases project name for tracking")
-    parser.add_argument("--debug", action="store_true",
-                        help="Save first 5 raw model outputs for debugging")
+    parser.add_argument(
+        "--subset-size", type=int, default=None, help="Override config subset_size"
+    )
+    parser.add_argument(
+        "--full", action="store_true", help="Run on full datasets (ignore subset_size)"
+    )
+    parser.add_argument(
+        "--output-dir", default="outputs", help="Directory for output files"
+    )
+    parser.add_argument(
+        "--benchmarks",
+        nargs="*",
+        default=None,
+        help="Specific benchmarks to run (default: all in config)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducible runs"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=None, help="Batch size for batched inference"
+    )
+    parser.add_argument(
+        "--no-batch",
+        action="store_true",
+        help="Disable batched inference (force per-question)",
+    )
+    parser.add_argument(
+        "--use-vllm", action="store_true", help="Use vLLM backend for inference"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Single device for benchmark execution (default: evaluation.device or cuda:0)",
+    )
+    parser.add_argument(
+        "--multi-gpu",
+        action="store_true",
+        help="Distribute benchmarks across available GPUs",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default=None,
+        help="Weights & Biases project name for tracking",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save first 5 raw model outputs for debugging",
+    )
     return parser.parse_args()
 
 
@@ -77,9 +108,13 @@ TASK_TYPE = {
     "strategyqa": "commonsense",
     "mmlu": "commonsense",
     "arc_challenge": "commonsense",
+    "math 500": "math",
+    "gpqa diamond": "commonsense",
+    "aime": "math",
+    "mmlu pro": "commonsense",
 }
 
-IS_MCQ = {"mmlu", "arc_challenge"}
+IS_MCQ = {"mmlu", "arc_challenge", "gpqa diamond", "mmlu pro"}
 
 
 def set_seed(seed: int):
@@ -95,30 +130,87 @@ def extract_mcq_choice(text: str) -> str:
         return ""
     upper = text.strip().upper()
     import re
-    # Look for "ANSWER: A" or "ANSWER IS A" pattern
+<<<<<<< HEAD
     tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-D])\b", upper)
     if tagged:
         return tagged.group(1)
-    # Look for explicit patterns
     explicit = re.search(r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-D])\b", upper)
     if explicit:
         return explicit.group(1)
-    # Look for single letter answer
     direct = re.search(r"\b([A-D])\b", upper)
     if direct:
         return direct.group(1)
+    answer_is = re.search(r"(?:^|\s)(?:THE\s+)?ANSWER\s+IS\s+([A-D])\b", upper)
+    if answer_is:
+        return answer_is.group(1)
+=======
+
+    # Look for "ANSWER: A" or "ANSWER IS A" pattern
+    tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-J])\b", upper)
+    if tagged:
+        return tagged.group(1)
+    # Look for explicit patterns
+    explicit = re.search(
+        r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-J])\b", upper
+    )
+    if explicit:
+        return explicit.group(1)
+    # Look for single letter answer
+    direct = re.search(r"\b([A-J])\b", upper)
+    if direct:
+        return direct.group(1)
+>>>>>>> abhyuday
     return ""
 
 
 def _mcq_prompt(question: str) -> str:
-    return f"{question}\n\nOutput only the correct answer choice (A, B, C, or D):"
+<<<<<<< HEAD
+    return f"Question: {question}\nOutput the correct answer choice (A, B, C, or D):"
 
 
 def _mcq_cot_prompt(question: str) -> str:
-    return f"{question}\n\nLet's think step by step. At the end, output the correct answer choice letter (A, B, C, or D)."
+    return (
+        "Let's think step by step. At the end, output the correct answer choice letter (A, B, C, or D).\n"
+        f"Question: {question}\nAnswer:"
+    )
 
 
 def baseline_greedy(inference: InferencePipeline, question: str, benchmark: str = "") -> str:
+    if benchmark in IS_MCQ:
+        prompt = _mcq_prompt(question)
+    else:
+        prompt = f"Question: {question}\nAnswer:"
+    return inference.generate_answer(prompt)
+
+
+def baseline_cot(inference: InferencePipeline, question: str, benchmark: str = "") -> str:
+    if benchmark in IS_MCQ:
+        prompt = _mcq_cot_prompt(question)
+    else:
+        prompt = (
+            "Let's think step by step and provide the final answer.\n"
+            f"Question: {question}\nAnswer:"
+        )
+    return inference.generate_answer(prompt)
+
+
+def make_batch_greedy(inference: InferencePipeline, benchmark: str = ""):
+    def fn(questions: list[str]) -> list[str]:
+        if benchmark in IS_MCQ:
+            prompts = [_mcq_prompt(q) for q in questions]
+        else:
+            prompts = [f"Question: {q}\nAnswer:" for q in questions]
+=======
+    return f"{question}\n\nOutput only the correct answer choice letter (e.g., A, B, C, etc.):"
+
+
+def _mcq_cot_prompt(question: str) -> str:
+    return f"{question}\n\nLet's think step by step. At the end, output the correct answer choice letter (e.g., A, B, C, etc.)."
+
+
+def baseline_greedy(
+    inference: InferencePipeline, question: str, benchmark: str = ""
+) -> str:
     """Greedy baseline - direct answer without reasoning."""
     if benchmark in IS_MCQ:
         prompt = _mcq_prompt(question)
@@ -127,7 +219,9 @@ def baseline_greedy(inference: InferencePipeline, question: str, benchmark: str 
     return inference.generate_answer(prompt)
 
 
-def baseline_cot(inference: InferencePipeline, question: str, benchmark: str = "") -> str:
+def baseline_cot(
+    inference: InferencePipeline, question: str, benchmark: str = ""
+) -> str:
     """Chain-of-Thought baseline with step-by-step reasoning."""
     if benchmark in IS_MCQ:
         prompt = _mcq_cot_prompt(question)
@@ -141,21 +235,37 @@ def make_batch_greedy(inference: InferencePipeline):
         if benchmark in IS_MCQ:
             prompts = [_mcq_prompt(q) for q in questions]
         else:
-            prompts = [f"{q}\n\nProvide only the final numerical answer, nothing else." for q in questions]
+            prompts = [
+                f"{q}\n\nProvide only the final numerical answer, nothing else."
+                for q in questions
+            ]
+>>>>>>> abhyuday
         return inference.generate_answers_batch(prompts)
+
     return fn
 
 
+<<<<<<< HEAD
+def make_batch_cot(inference: InferencePipeline, benchmark: str = ""):
+    def fn(questions: list[str]) -> list[str]:
+=======
 def make_batch_cot(inference: InferencePipeline):
     def fn(questions: list[str], benchmark: str = "") -> list[str]:
+>>>>>>> abhyuday
         if benchmark in IS_MCQ:
             prompts = [_mcq_cot_prompt(q) for q in questions]
         else:
             prompts = [
+<<<<<<< HEAD
+                "Let's think step by step and provide the final answer.\n"
+                f"Question: {q}\nAnswer:"
+=======
                 f"{q}\n\nLet's think step by step, then provide the final answer in the format: #### [answer]"
+>>>>>>> abhyuday
                 for q in questions
             ]
         return inference.generate_answers_batch(prompts)
+
     return fn
 
 
@@ -168,6 +278,7 @@ def run_qubo_pipeline(
     question: str,
     task_type: str = "math",
     gold: str = "",
+    is_mcq: bool = False,
 ) -> str:
     samples = sampler.sample(question)
     if not samples:
@@ -178,7 +289,7 @@ def run_qubo_pipeline(
     selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
     if not selected_indices:
         selected_indices = list(range(min(inference.subset_size, len(samples))))
-    return inference.run(question, selected_indices, samples)
+    return inference.run(question, selected_indices, samples, is_mcq=is_mcq)
 
 
 def extract_answer(pred: str, benchmark: str) -> str:
@@ -186,6 +297,10 @@ def extract_answer(pred: str, benchmark: str) -> str:
         return ""
     if benchmark == "gsm8k":
         return extract_predicted_answer(pred)
+    if benchmark in {"math 500", "aime"}:
+        if "####" in pred:
+            return pred.split("####")[-1].strip()
+        return pred.strip()
     return pred.strip()
 
 
@@ -197,7 +312,10 @@ def is_correct(pred: str, gold: str, benchmark: str) -> bool:
         return bool(extracted and extracted == gold.strip().upper())
     if benchmark == "gsm8k":
         return is_correct_prediction(pred, extract_gsm8k_gold(gold))
-    return pred.strip().lower() == gold.strip().lower() or gold.strip().lower() in pred.strip().lower()
+    return (
+        pred.strip().lower() == gold.strip().lower()
+        or gold.strip().lower() in pred.strip().lower()
+    )
 
 
 def write_summary_json(path: str, results: dict):
@@ -223,9 +341,7 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
         r = results[b]
         # Check if benchmark has accuracy data or if it failed
         if "error" in r and "accuracy" not in r:
-            lines.append(
-                f"| {b} | 0 | N/A | N/A | N/A | N/A | ❌ Failed |"
-            )
+            lines.append(f"| {b} | 0 | N/A | N/A | N/A | N/A | ❌ Failed |")
         else:
             a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
             gain = r.get("abs_gain_vs_greedy", 0.0)
@@ -244,27 +360,31 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
         r = results[b]
         # Check if benchmark has accuracy data or if it failed
         if "error" in r and "accuracy" not in r:
-            lines.extend([
-                f"### {b}",
-                "",
-                f"**Status: Failed**",
-                f"- Error: {r['error']}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"### {b}",
+                    "",
+                    f"**Status: Failed**",
+                    f"- Error: {r['error']}",
+                    "",
+                ]
+            )
         else:
             a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
-            lines.extend([
-                f"### {b}",
-                "",
-                f"- Samples: {r.get('num_samples', 0)}",
-                f"- Failed samples: {r.get('failed_samples', 0)}",
-                f"- Greedy accuracy: {a.get('greedy', 0.0):.2%}",
-                f"- CoT accuracy: {a.get('cot', 0.0):.2%}",
-                f"- QUBO pipeline accuracy: {a.get('qubo', 0.0):.2%}",
-                f"- Absolute gain vs Greedy: {r.get('abs_gain_vs_greedy', 0.0):+.2%}",
-                f"- CoT gain over Greedy: {r.get('cot_gain_over_greedy', 0.0):+.2%}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"### {b}",
+                    "",
+                    f"- Samples: {r.get('num_samples', 0)}",
+                    f"- Failed samples: {r.get('failed_samples', 0)}",
+                    f"- Greedy accuracy: {a.get('greedy', 0.0):.2%}",
+                    f"- CoT accuracy: {a.get('cot', 0.0):.2%}",
+                    f"- QUBO pipeline accuracy: {a.get('qubo', 0.0):.2%}",
+                    f"- Absolute gain vs Greedy: {r.get('abs_gain_vs_greedy', 0.0):+.2%}",
+                    f"- CoT gain over Greedy: {r.get('cot_gain_over_greedy', 0.0):+.2%}",
+                    "",
+                ]
+            )
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -317,11 +437,11 @@ def run_benchmark_on_gpu(
     failed = 0
 
     if use_batch and batch_size > 1 and torch.cuda.is_available():
-        batch_greedy_fn = make_batch_greedy(inference)
-        batch_cot_fn = make_batch_cot(inference)
+        batch_greedy_fn = make_batch_greedy(inference, benchmark=benchmark_name)
+        batch_cot_fn = make_batch_cot(inference, benchmark=benchmark_name)
         for i in range(0, len(questions), batch_size):
-            batch_q = questions[i:i + batch_size]
-            batch_gold = gold_answers[i:i + batch_size]
+            batch_q = questions[i : i + batch_size]
+            batch_gold = gold_answers[i : i + batch_size]
             try:
                 t0 = time.time()
                 preds_g = batch_greedy_fn(batch_q)
@@ -331,7 +451,18 @@ def run_benchmark_on_gpu(
                 for j, q in enumerate(batch_q):
                     gold = batch_gold[j]
                     pred_q = run_qubo_pipeline(
-                        sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+<<<<<<< HEAD
+                        sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(benchmark_name in IS_MCQ)
+=======
+                        sampler,
+                        verifier,
+                        qubo_builder,
+                        solver,
+                        inference,
+                        q,
+                        task_type,
+                        gold=gold,
+>>>>>>> abhyuday
                     )
                     pred_qubo_n = extract_answer(pred_q, benchmark_name)
                     pred_g_n = extract_answer(preds_g[j], benchmark_name)
@@ -343,45 +474,66 @@ def run_benchmark_on_gpu(
                     correct_cot += c_c
                     correct_qubo += c_q
                     total += 1
-                    results_rows.append({
-                        "benchmark": benchmark_name,
-                        "id": i + j,
-                        "question": q,
-                        "gold": gold,
-                        "pred_greedy": pred_g_n,
-                        "pred_cot": pred_c_n,
-                        "pred_qubo": pred_qubo_n,
-                        "correct_greedy": c_g,
-                        "correct_cot": c_c,
-                        "correct_qubo": c_q,
-                        "runtime_greedy_s": round((t1 - t0) / len(batch_q), 4),
-                        "runtime_cot_s": round((t2 - t1) / len(batch_q), 4),
-                        "runtime_qubo_s": 0.0,
-                        "error": "",
-                    })
+                    results_rows.append(
+                        {
+                            "benchmark": benchmark_name,
+                            "id": i + j,
+                            "question": q,
+                            "gold": gold,
+                            "pred_greedy": pred_g_n,
+                            "pred_cot": pred_c_n,
+                            "pred_qubo": pred_qubo_n,
+                            "correct_greedy": c_g,
+                            "correct_cot": c_c,
+                            "correct_qubo": c_q,
+                            "runtime_greedy_s": round((t1 - t0) / len(batch_q), 4),
+                            "runtime_cot_s": round((t2 - t1) / len(batch_q), 4),
+                            "runtime_qubo_s": 0.0,
+                            "error": "",
+                        }
+                    )
             except Exception as e:
                 failed += len(batch_q)
                 for j in range(len(batch_q)):
-                    results_rows.append({
-                        "benchmark": benchmark_name,
-                        "id": i + j,
-                        "question": batch_q[j],
-                        "gold": batch_gold[j],
-                        "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
-                        "correct_greedy": 0, "correct_cot": 0, "correct_qubo": 0,
-                        "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
-                        "error": str(e),
-                    })
+                    results_rows.append(
+                        {
+                            "benchmark": benchmark_name,
+                            "id": i + j,
+                            "question": batch_q[j],
+                            "gold": batch_gold[j],
+                            "pred_greedy": "",
+                            "pred_cot": "",
+                            "pred_qubo": "",
+                            "correct_greedy": 0,
+                            "correct_cot": 0,
+                            "correct_qubo": 0,
+                            "runtime_greedy_s": 0.0,
+                            "runtime_cot_s": 0.0,
+                            "runtime_qubo_s": 0.0,
+                            "error": str(e),
+                        }
+                    )
     else:
         for idx, (q, gold) in enumerate(zip(questions, gold_answers)):
             try:
                 t0 = time.time()
-                pred_greedy = baseline_greedy(inference, q)
+                pred_greedy = baseline_greedy(inference, q, benchmark=benchmark_name)
                 t1 = time.time()
-                pred_cot = baseline_cot(inference, q)
+                pred_cot = baseline_cot(inference, q, benchmark=benchmark_name)
                 t2 = time.time()
                 pred_qubo = run_qubo_pipeline(
-                    sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+<<<<<<< HEAD
+                    sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(benchmark_name in IS_MCQ)
+=======
+                    sampler,
+                    verifier,
+                    qubo_builder,
+                    solver,
+                    inference,
+                    q,
+                    task_type,
+                    gold=gold,
+>>>>>>> abhyuday
                 )
                 t3 = time.time()
                 pred_g_n = extract_answer(pred_greedy, benchmark_name)
@@ -394,25 +546,44 @@ def run_benchmark_on_gpu(
                 correct_cot += c_c
                 correct_qubo += c_q
                 total += 1
-                results_rows.append({
-                    "benchmark": benchmark_name,
-                    "id": idx, "question": q, "gold": gold,
-                    "pred_greedy": pred_g_n, "pred_cot": pred_c_n, "pred_qubo": pred_q_n,
-                    "correct_greedy": c_g, "correct_cot": c_c, "correct_qubo": c_q,
-                    "runtime_greedy_s": round(t1 - t0, 4),
-                    "runtime_cot_s": round(t2 - t1, 4),
-                    "runtime_qubo_s": round(t3 - t2, 4),
-                    "error": "",
-                })
+                results_rows.append(
+                    {
+                        "benchmark": benchmark_name,
+                        "id": idx,
+                        "question": q,
+                        "gold": gold,
+                        "pred_greedy": pred_g_n,
+                        "pred_cot": pred_c_n,
+                        "pred_qubo": pred_q_n,
+                        "correct_greedy": c_g,
+                        "correct_cot": c_c,
+                        "correct_qubo": c_q,
+                        "runtime_greedy_s": round(t1 - t0, 4),
+                        "runtime_cot_s": round(t2 - t1, 4),
+                        "runtime_qubo_s": round(t3 - t2, 4),
+                        "error": "",
+                    }
+                )
             except Exception as e:
                 failed += 1
-                results_rows.append({
-                    "benchmark": benchmark_name, "id": idx, "question": q, "gold": gold,
-                    "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
-                    "correct_greedy": 0, "correct_cot": 0, "correct_qubo": 0,
-                    "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
-                    "error": str(e),
-                })
+                results_rows.append(
+                    {
+                        "benchmark": benchmark_name,
+                        "id": idx,
+                        "question": q,
+                        "gold": gold,
+                        "pred_greedy": "",
+                        "pred_cot": "",
+                        "pred_qubo": "",
+                        "correct_greedy": 0,
+                        "correct_cot": 0,
+                        "correct_qubo": 0,
+                        "runtime_greedy_s": 0.0,
+                        "runtime_cot_s": 0.0,
+                        "runtime_qubo_s": 0.0,
+                        "error": str(e),
+                    }
+                )
 
     acc_g = (correct_greedy / total) if total else 0.0
     acc_c = (correct_cot / total) if total else 0.0
@@ -441,7 +612,11 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     runner = BenchmarkRunner()
-    selected_device = str(resolve_device(selected_device or runner.config.get("evaluation", {}).get("device")))
+    selected_device = str(
+        resolve_device(
+            selected_device or runner.config.get("evaluation", {}).get("device")
+        )
+    )
     if args.subset_size is not None:
         runner.subset_size = args.subset_size
     if args.full:
@@ -450,21 +625,32 @@ def main():
     benchmark_list = args.benchmarks if args.benchmarks else runner.benchmarks
     unknown = [b for b in benchmark_list if b not in runner.benchmarks]
     if unknown:
-        raise ValueError(f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}")
+        raise ValueError(
+            f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}"
+        )
 
-    use_batch = not args.no_batch and selected_device.startswith("cuda") and torch.cuda.is_available()
+    use_batch = (
+        not args.no_batch
+        and selected_device.startswith("cuda")
+        and torch.cuda.is_available()
+    )
     # Use smaller default batch size (4) to prevent OOM errors; can be overridden with --batch-size
-    batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 4)
+    batch_size = args.batch_size or runner.config.get("evaluation", {}).get(
+        "batch_size", 4
+    )
 
     if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
         print(f"Benchmark device: {requested_device} -> visible as {selected_device}")
     else:
         print(f"Benchmark device: {selected_device}")
-    print(f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {torch.cuda.device_count()}")
+    print(
+        f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {torch.cuda.device_count()}"
+    )
 
     if args.wandb_project:
         try:
             import wandb
+
             wandb.init(
                 project=args.wandb_project,
                 config={
@@ -487,7 +673,9 @@ def main():
     all_rows = []
 
     if num_gpus > 1 and len(benchmark_list) > 1:
-        print(f"  Distributing {len(benchmark_list)} benchmarks across {num_gpus} GPUs...")
+        print(
+            f"  Distributing {len(benchmark_list)} benchmarks across {num_gpus} GPUs..."
+        )
         chunk_size = max(1, len(benchmark_list) // num_gpus)
         gpu_assignments = {}
         for i, b in enumerate(benchmark_list):
@@ -498,28 +686,43 @@ def main():
             futures = []
             for gpu_id, benches in gpu_assignments.items():
                 for b in benches:
-                    futures.append(executor.submit(
-                        run_benchmark_on_gpu, gpu_id, b,
-                        "config/config.yaml", args.seed,
-                        runner.subset_size, runner.full_eval,
-                        use_batch, batch_size, args.use_vllm, args.device,
-                    ))
+                    futures.append(
+                        executor.submit(
+                            run_benchmark_on_gpu,
+                            gpu_id,
+                            b,
+                            "config/config.yaml",
+                            args.seed,
+                            runner.subset_size,
+                            runner.full_eval,
+                            use_batch,
+                            batch_size,
+                            args.use_vllm,
+                            args.device,
+                        )
+                    )
 
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Multi-GPU"):
+            for future in tqdm(
+                as_completed(futures), total=len(futures), desc="Multi-GPU"
+            ):
                 result = future.result()
-                summary[result["benchmark"]] = {k: v for k, v in result.items() if k != "rows"}
+                summary[result["benchmark"]] = {
+                    k: v for k, v in result.items() if k != "rows"
+                }
                 all_rows.extend(result["rows"])
                 a = result["accuracy"]
-                print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
+                print(
+                    f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}"
+                )
     else:
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print("INITIALIZATION")
-        print(f"{'='*70}")
+        print(f"{'=' * 70}")
         print("[1/6] Loading inference model...")
         sys.stdout.flush()
         inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
         runtime_device = str(inference.device)
-        
+
         print("[2/6] Loading sampler (sharing model)...")
         sys.stdout.flush()
         sampler = DiverseSampler(
@@ -540,26 +743,41 @@ def main():
         print("")
 
         print(f"Runtime device: {runtime_device}")
-        print(f"Inference model device: {inference.model_input_device if not inference.use_vllm else inference.device}")
-        print(f"Generation device: {inference.generation_input_device if not inference.use_vllm else inference.device}")
+        print(
+            f"Inference model device: {inference.model_input_device if not inference.use_vllm else inference.device}"
+        )
+        print(
+            f"Generation device: {inference.generation_input_device if not inference.use_vllm else inference.device}"
+        )
         print(f"Sampler device: {sampler.device}")
         print(f"Verifier device: {verifier.device}")
         print(f"Solver device: {solver.device}")
 
         csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
         fieldnames = [
-            "benchmark", "id", "question", "gold", "pred_greedy", "pred_cot",
-            "pred_qubo", "correct_greedy", "correct_cot", "correct_qubo",
-            "runtime_greedy_s", "runtime_cot_s", "runtime_qubo_s", "error",
+            "benchmark",
+            "id",
+            "question",
+            "gold",
+            "pred_greedy",
+            "pred_cot",
+            "pred_qubo",
+            "correct_greedy",
+            "correct_cot",
+            "correct_qubo",
+            "runtime_greedy_s",
+            "runtime_cot_s",
+            "runtime_qubo_s",
+            "error",
         ]
         csv_file = open(csv_path, "w", newline="", encoding="utf-8")
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
 
         for b in benchmark_list:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Benchmark: {b}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             print(f"  [STAGE 1/5] Loading benchmark data...")
             sys.stdout.flush()
 
@@ -567,7 +785,13 @@ def main():
                 questions, gold_answers = runner.load_benchmark(b)
             except Exception as e:
                 print(f"  ❌ Failed to load benchmark {b}: {e}")
-                summary[b] = {"error": str(e), "num_samples": 0, "accuracy": {"greedy": 0.0, "cot": 0.0, "qubo": 0.0}, "abs_gain_vs_greedy": 0.0, "cot_gain_over_greedy": 0.0}
+                summary[b] = {
+                    "error": str(e),
+                    "num_samples": 0,
+                    "accuracy": {"greedy": 0.0, "cot": 0.0, "qubo": 0.0},
+                    "abs_gain_vs_greedy": 0.0,
+                    "cot_gain_over_greedy": 0.0,
+                }
                 continue
 
             task_type = TASK_TYPE.get(b, "math")
@@ -581,40 +805,62 @@ def main():
             failed = 0
 
             if use_batch and batch_size > 1:
+<<<<<<< HEAD
+                batch_greedy_fn = make_batch_greedy(inference, benchmark=b)
+                batch_cot_fn = make_batch_cot(inference, benchmark=b)
+=======
                 print(f"  Using batched inference (batch_size={batch_size})")
                 sys.stdout.flush()
                 batch_greedy_fn = make_batch_greedy(inference)
                 batch_cot_fn = make_batch_cot(inference)
+>>>>>>> abhyuday
                 batch_total = (len(questions) + batch_size - 1) // batch_size
                 for i in range(0, len(questions), batch_size):
                     batch_num = i // batch_size + 1
-                    batch_q = questions[i:i + batch_size]
-                    batch_gold = gold_answers[i:i + batch_size]
-                    
-                    print(f"  [Batch {batch_num}/{batch_total}] Processing questions {i+1}-{i+len(batch_q)}...")
+                    batch_q = questions[i : i + batch_size]
+                    batch_gold = gold_answers[i : i + batch_size]
+
+                    print(
+                        f"  [Batch {batch_num}/{batch_total}] Processing questions {i + 1}-{i + len(batch_q)}..."
+                    )
                     sys.stdout.flush()
-                    
+
                     try:
                         t0 = time.time()
-                        print(f"    → Greedy inference...", end='', flush=True)
+                        print(f"    → Greedy inference...", end="", flush=True)
                         preds_g = batch_greedy_fn(batch_q)
                         t1 = time.time()
-                        print(f" done ({t1-t0:.1f}s)")
-                        
-                        print(f"    → CoT inference...", end='', flush=True)
+                        print(f" done ({t1 - t0:.1f}s)")
+
+                        print(f"    → CoT inference...", end="", flush=True)
                         preds_c = batch_cot_fn(batch_q)
                         t2 = time.time()
-                        print(f" done ({t2-t1:.1f}s)")
-                        
+                        print(f" done ({t2 - t1:.1f}s)")
+
                         for j, q in enumerate(batch_q):
-                            print(f"    → QUBO pipeline (Q{i+j+1})...", end='', flush=True)
+                            print(
+                                f"    → QUBO pipeline (Q{i + j + 1})...",
+                                end="",
+                                flush=True,
+                            )
                             tq = time.time()
                             gold = batch_gold[j]
                             pred_qubo = run_qubo_pipeline(
-                                sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+<<<<<<< HEAD
+                                sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(b in IS_MCQ)
+=======
+                                sampler,
+                                verifier,
+                                qubo_builder,
+                                solver,
+                                inference,
+                                q,
+                                task_type,
+                                gold=gold,
+>>>>>>> abhyuday
                             )
                             tq_end = time.time()
-                            print(f" done ({tq_end-tq:.1f}s)", flush=True)
+                            print(f" done ({tq_end - tq:.1f}s)", flush=True)
                             pred_g_n = extract_answer(preds_g[j], b)
                             pred_c_n = extract_answer(preds_c[j], b)
                             pred_q_n = extract_answer(pred_qubo, b)
@@ -626,9 +872,16 @@ def main():
                             correct_qubo += c_q
                             total += 1
                             row = {
-                                "benchmark": b, "id": i + j, "question": q, "gold": gold,
-                                "pred_greedy": pred_g_n, "pred_cot": pred_c_n, "pred_qubo": pred_q_n,
-                                "correct_greedy": c_g, "correct_cot": c_c, "correct_qubo": c_q,
+                                "benchmark": b,
+                                "id": i + j,
+                                "question": q,
+                                "gold": gold,
+                                "pred_greedy": pred_g_n,
+                                "pred_cot": pred_c_n,
+                                "pred_qubo": pred_q_n,
+                                "correct_greedy": c_g,
+                                "correct_cot": c_c,
+                                "correct_qubo": c_q,
                                 "runtime_greedy_s": round((t1 - t0) / len(batch_q), 4),
                                 "runtime_cot_s": round((t2 - t1) / len(batch_q), 4),
                                 "runtime_qubo_s": round(tq_end - tq, 4),
@@ -637,21 +890,33 @@ def main():
                             writer.writerow(row)
                             all_rows.append(row)
                             if len(all_rows) <= 3:
-                                print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(preds_g[j][:200])}' raw_c='{repr(preds_c[j][:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
+                                print(
+                                    f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(preds_g[j][:200])}' raw_c='{repr(preds_c[j][:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'"
+                                )
                         acc_g = (correct_greedy / total) * 100 if total else 0.0
                         acc_c = (correct_cot / total) * 100 if total else 0.0
                         acc_q = (correct_qubo / total) * 100 if total else 0.0
                     except Exception as e:
                         import traceback
+
                         print(f"\n  ⚠️  BATCH ERROR (batch {batch_num}): {e}")
                         traceback.print_exc()
                         failed += len(batch_q)
                         for j in range(len(batch_q)):
                             row = {
-                                "benchmark": b, "id": i + j, "question": batch_q[j], "gold": batch_gold[j],
-                                "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
-                                "correct_greedy": 0, "correct_cot": 0, "correct_qubo": 0,
-                                "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
+                                "benchmark": b,
+                                "id": i + j,
+                                "question": batch_q[j],
+                                "gold": batch_gold[j],
+                                "pred_greedy": "",
+                                "pred_cot": "",
+                                "pred_qubo": "",
+                                "correct_greedy": 0,
+                                "correct_cot": 0,
+                                "correct_qubo": 0,
+                                "runtime_greedy_s": 0.0,
+                                "runtime_cot_s": 0.0,
+                                "runtime_qubo_s": 0.0,
                                 "error": str(e),
                             }
                             writer.writerow(row)
@@ -671,25 +936,45 @@ def main():
                 print(f"  Using per-question inference (no batching)")
                 sys.stdout.flush()
                 for idx, (q, gold) in enumerate(list(zip(questions, gold_answers))):
-                    print(f"  [Question {idx+1}/{len(questions)}] Processing...", flush=True)
+                    print(
+                        f"  [Question {idx + 1}/{len(questions)}] Processing...",
+                        flush=True,
+                    )
                     try:
                         t0 = time.time()
-                        print(f"    → Greedy...", end='', flush=True)
+<<<<<<< HEAD
+                        pred_greedy = baseline_greedy(inference, q, benchmark=b)
+                        t1 = time.time()
+                        pred_cot = baseline_cot(inference, q, benchmark=b)
+=======
+                        print(f"    → Greedy...", end="", flush=True)
                         pred_greedy = baseline_greedy(inference, q)
                         t1 = time.time()
-                        print(f" {t1-t0:.1f}s", flush=True)
-                        
-                        print(f"    → CoT...", end='', flush=True)
+                        print(f" {t1 - t0:.1f}s", flush=True)
+
+                        print(f"    → CoT...", end="", flush=True)
                         pred_cot = baseline_cot(inference, q)
+>>>>>>> abhyuday
                         t2 = time.time()
-                        print(f" {t2-t1:.1f}s", flush=True)
-                        
-                        print(f"    → QUBO pipeline...", end='', flush=True)
+                        print(f" {t2 - t1:.1f}s", flush=True)
+
+                        print(f"    → QUBO pipeline...", end="", flush=True)
                         pred_qubo = run_qubo_pipeline(
-                            sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+<<<<<<< HEAD
+                            sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold, is_mcq=(b in IS_MCQ)
+=======
+                            sampler,
+                            verifier,
+                            qubo_builder,
+                            solver,
+                            inference,
+                            q,
+                            task_type,
+                            gold=gold,
+>>>>>>> abhyuday
                         )
                         t3 = time.time()
-                        print(f" {t3-t2:.1f}s", flush=True)
+                        print(f" {t3 - t2:.1f}s", flush=True)
                         pred_g_n = extract_answer(pred_greedy, b)
                         pred_c_n = extract_answer(pred_cot, b)
                         pred_q_n = extract_answer(pred_qubo, b)
@@ -701,9 +986,16 @@ def main():
                         correct_qubo += c_q
                         total += 1
                         row = {
-                            "benchmark": b, "id": idx, "question": q, "gold": gold,
-                            "pred_greedy": pred_g_n, "pred_cot": pred_c_n, "pred_qubo": pred_q_n,
-                            "correct_greedy": c_g, "correct_cot": c_c, "correct_qubo": c_q,
+                            "benchmark": b,
+                            "id": idx,
+                            "question": q,
+                            "gold": gold,
+                            "pred_greedy": pred_g_n,
+                            "pred_cot": pred_c_n,
+                            "pred_qubo": pred_q_n,
+                            "correct_greedy": c_g,
+                            "correct_cot": c_c,
+                            "correct_qubo": c_q,
                             "runtime_greedy_s": round(t1 - t0, 4),
                             "runtime_cot_s": round(t2 - t1, 4),
                             "runtime_qubo_s": round(t3 - t2, 4),
@@ -712,17 +1004,29 @@ def main():
                         writer.writerow(row)
                         all_rows.append(row)
                         if len(all_rows) <= 3:
-                            print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(pred_greedy[:200])}' raw_c='{repr(pred_cot[:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
+                            print(
+                                f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(pred_greedy[:200])}' raw_c='{repr(pred_cot[:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'"
+                            )
                     except Exception as e:
                         import traceback
+
                         print(f"  ⚠️  ERROR (question {idx}): {e}")
                         traceback.print_exc()
                         failed += 1
                         row = {
-                            "benchmark": b, "id": idx, "question": q, "gold": gold,
-                            "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
-                            "correct_greedy": 0, "correct_cot": 0, "correct_qubo": 0,
-                            "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
+                            "benchmark": b,
+                            "id": idx,
+                            "question": q,
+                            "gold": gold,
+                            "pred_greedy": "",
+                            "pred_cot": "",
+                            "pred_qubo": "",
+                            "correct_greedy": 0,
+                            "correct_cot": 0,
+                            "correct_qubo": 0,
+                            "runtime_greedy_s": 0.0,
+                            "runtime_cot_s": 0.0,
+                            "runtime_qubo_s": 0.0,
                             "error": str(e),
                         }
                         writer.writerow(row)
@@ -737,18 +1041,23 @@ def main():
                 "abs_gain_vs_greedy": acc_qubo - acc_greedy,
                 "cot_gain_over_greedy": acc_cot - acc_greedy,
             }
-            print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%} | samples={total} failed={failed}")
+            print(
+                f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%} | samples={total} failed={failed}"
+            )
 
             if args.wandb_project:
                 try:
                     import wandb
-                    wandb.log({
-                        f"{b}/accuracy_greedy": acc_greedy,
-                        f"{b}/accuracy_cot": acc_cot,
-                        f"{b}/accuracy_qubo": acc_qubo,
-                        f"{b}/abs_gain_vs_greedy": acc_qubo - acc_greedy,
-                        f"{b}/samples": total,
-                    })
+
+                    wandb.log(
+                        {
+                            f"{b}/accuracy_greedy": acc_greedy,
+                            f"{b}/accuracy_cot": acc_cot,
+                            f"{b}/accuracy_qubo": acc_qubo,
+                            f"{b}/abs_gain_vs_greedy": acc_qubo - acc_greedy,
+                            f"{b}/samples": total,
+                        }
+                    )
                 except ImportError:
                     pass
 
@@ -774,14 +1083,15 @@ def main():
     md_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.md")
     write_summary_markdown(md_path, summary, benchmark_list)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Wrote: {json_path}")
     print(f"Wrote: {md_path}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     if args.wandb_project:
         try:
             import wandb
+
             wandb.log({"summary": summary_meta})
             wandb.finish()
         except ImportError:

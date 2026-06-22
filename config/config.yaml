@@ -1,4 +1,5 @@
 model:
+
   name: "Qwen/Qwen2.5-1.5B-Instruct"
   cache_dir: "./cache/models"
   load_in_4bit: false
@@ -11,67 +12,71 @@ model:
     gpu_memory_utilization: 0.9
 
 pipeline:
-  num_answers: 4
-  num_reasons: 4
-  subset_size: 6
-  max_new_tokens: 256
-  sampling_max_new_tokens: 256
-  temperature_range: [0.3, 0.9]
-  top_p: 0.95
+    num_answers: 4
+    num_reasons: 4
+    subset_size: 6
+    max_new_tokens: 256
+    sampling_max_new_tokens: 256
+    temperature_range: [0.3, 0.9]
+    top_p: 0.95
 
 verifier:
-  math_mode: "calculator"
-  nli_model: "cross-encoder/nli-deberta-v3-base"
-  nli_threshold: 0.5
-  device_map_verifier: null
+    math_mode: "calculator"
+    nli_model: "cross-encoder/nli-deberta-v3-base"
+    nli_threshold: 0.5
+    device_map_verifier: null
 
 qubo:
-  max_vars: 200
-  similarity_metric: "cosine"
-  clustering_method: "kmeans"
-  penalty_weight: 2.0
-  diversity_bonus: 0.5
-  hubo_enabled: false
-  hubo_triplet_penalty: 1.0
-  embedder_device: null
+    max_vars: 200
+    similarity_metric: "cosine"
+    clustering_method: "kmeans"
+    penalty_weight: 2.0
+    diversity_bonus: 0.5
+    hubo_enabled: false
+    hubo_triplet_penalty: 1.0
+    embedder_device: null
 
 solver:
-  method: "simulated_annealing"
-  sa:
-    initial_temp: 100.0
-    final_temp: 0.01
-    cooling_rate: 0.99
-    iterations: 500
-    num_reads: 2
-  gpu:
-    enabled: true
-    num_parallel_reads: 1024
-    use_parallel_tempering: true
-    use_counterdiabatic: false
+    method: "simulated_annealing"
+    sa:
+        initial_temp: 100.0
+        final_temp: 0.01
+        cooling_rate: 0.99
+        iterations: 500
+        num_reads: 2
+    gpu:
+        enabled: true
+        num_parallel_reads: 1024
+        use_parallel_tempering: true
+        use_counterdiabatic: false
 
 training:
-  sft_epochs: 3
-  learning_rate: 2e-5
-  batch_size: 8
-  lora_rank: 16
-  lora_alpha: 32
-  lora_dropout: 0.05
-  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
-  output_dir: "./checkpoints"
-  use_peft: true
-  iterative_rounds: 3
-  max_seq_length: 2048
-  warmup_steps: 100
+    sft_epochs: 3
+    learning_rate: 2e-5
+    batch_size: 8
+    lora_rank: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    output_dir: "./checkpoints"
+    use_peft: true
+    iterative_rounds: 3
+    max_seq_length: 2048
+    warmup_steps: 100
 
 evaluation:
-  device: "cuda:1"
-  benchmarks:
-    - "gsm8k"
-    - "bbh"
-    - "strategyqa"
-    - "arc_challenge"
-    - "mmlu"
-  subset_size: 200
-  full_eval: false
-  batch_size: 4
-  use_batched_inference: true
+    device: "cuda:1"
+    benchmarks:
+        - "gsm8k"
+        - "bbh"
+        - "strategyqa"
+        - "arc_challenge"
+        - "mmlu"
+        - "math 500"
+        - "gpqa diamond"
+        - "aime"
+        - "mmlu pro"
+    subset_size: 200
+    full_eval: false
+    batch_size: 4
+    use_batched_inference: true

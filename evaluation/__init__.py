@@ -1,8 +1,9 @@
-import yaml
 import json
-import torch
 import re
 from pathlib import Path
+
+import torch
+import yaml
 from datasets import load_dataset
 
 
@@ -36,21 +37,39 @@ class BenchmarkRunner:
 
     def load_bbh(self) -> tuple[list[str], list[str]]:
         bbh_configs = [
-            "boolean_expressions", "causal_judgement", "date_understanding",
-            "disambiguation_qa", "dyck_languages", "formal_fallacies",
-            "geometric_shapes", "hyperbaton", "logical_deduction_five_objects",
-            "logical_deduction_seven_objects", "logical_deduction_three_objects",
-            "movie_recommendation", "multistep_arithmetic_two", "navigate",
-            "object_counting", "penguins_in_a_table", "reasoning_about_colored_objects",
-            "ruin_names", "salient_translation_error_detection", "snarks",
-            "sports_understanding", "temporal_sequences",
+            "boolean_expressions",
+            "causal_judgement",
+            "date_understanding",
+            "disambiguation_qa",
+            "dyck_languages",
+            "formal_fallacies",
+            "geometric_shapes",
+            "hyperbaton",
+            "logical_deduction_five_objects",
+            "logical_deduction_seven_objects",
+            "logical_deduction_three_objects",
+            "movie_recommendation",
+            "multistep_arithmetic_two",
+            "navigate",
+            "object_counting",
+            "penguins_in_a_table",
+            "reasoning_about_colored_objects",
+            "ruin_names",
+            "salient_translation_error_detection",
+            "snarks",
+            "sports_understanding",
+            "temporal_sequences",
             "tracking_shuffled_objects_five_objects",
             "tracking_shuffled_objects_seven_objects",
-            "tracking_shuffled_objects_three_objects", "web_of_lies", "word_sorting",
+            "tracking_shuffled_objects_three_objects",
+            "web_of_lies",
+            "word_sorting",
         ]
         questions = []
         answers = []
-        per_config = max(1, (self.subset_size if not self.full_eval else 9999) // len(bbh_configs))
+        per_config = max(
+            1, (self.subset_size if not self.full_eval else 9999) // len(bbh_configs)
+        )
         for config in bbh_configs:
             try:
                 dataset = load_dataset("lukaemon/bbh", config, split="test")
@@ -104,9 +123,76 @@ class BenchmarkRunner:
             labels = item["choices"]["label"]
             texts = item["choices"]["text"]
             options = [f"{label}. {text}" for label, text in zip(labels, texts)]
-            formatted_q = f"Question: {item['question']}\n" + "\n".join(options) + "\nAnswer:"
+            formatted_q = (
+                f"Question: {item['question']}\n" + "\n".join(options) + "\nAnswer:"
+            )
             questions.append(formatted_q)
             answers.append(str(item["answerKey"]).strip().upper())
+        return questions, answers
+
+    def load_math_500(self) -> tuple[list[str], list[str]]:
+        dataset = load_dataset("HuggingFaceH4/MATH-500", split="test")
+        if not self.full_eval:
+            dataset = dataset.select(range(min(self.subset_size, len(dataset))))
+        questions = [item["problem"] for item in dataset]
+        answers = [str(item["answer"]).strip() for item in dataset]
+        return questions, answers
+
+    def load_gpqa_diamond(self) -> tuple[list[str], list[str]]:
+        dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
+        if not self.full_eval:
+            dataset = dataset.select(range(min(self.subset_size, len(dataset))))
+        questions = []
+        answers = []
+        import random
+
+        for item in dataset:
+            correct = item["Correct Answer"]
+            incorrects = [
+                item["Incorrect Answer 1"],
+                item["Incorrect Answer 2"],
+                item["Incorrect Answer 3"],
+            ]
+            choices = [correct] + incorrects
+            random.Random(42).shuffle(choices)  # consistent shuffle
+            correct_idx = choices.index(correct)
+            correct_letter = ["A", "B", "C", "D"][correct_idx]
+
+            formatted_q = (
+                f"Question: {item['Question']}\n"
+                f"A. {choices[0]}\n"
+                f"B. {choices[1]}\n"
+                f"C. {choices[2]}\n"
+                f"D. {choices[3]}\n"
+                f"Answer:"
+            )
+            questions.append(formatted_q)
+            answers.append(correct_letter)
+        return questions, answers
+
+    def load_aime(self) -> tuple[list[str], list[str]]:
+        dataset = load_dataset("AI-MO/aimo-validation-aime", split="train")
+        if not self.full_eval:
+            dataset = dataset.select(range(min(self.subset_size, len(dataset))))
+        questions = [item["problem"] for item in dataset]
+        answers = [str(item["answer"]).strip() for item in dataset]
+        return questions, answers
+
+    def load_mmlu_pro(self) -> tuple[list[str], list[str]]:
+        dataset = load_dataset("TIGER-Lab/MMLU-Pro", split="test")
+        if not self.full_eval:
+            dataset = dataset.select(range(min(self.subset_size, len(dataset))))
+        questions = []
+        answers = []
+        for item in dataset:
+            choices = item["options"]
+            formatted_q = f"Question: {item['question']}\n"
+            letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            for idx, choice in enumerate(choices):
+                formatted_q += f"{letters[idx]}. {choice}\n"
+            formatted_q += "Answer:"
+            questions.append(formatted_q)
+            answers.append(item["answer"])
         return questions, answers
 
     def load_benchmark(self, name: str) -> tuple[list[str], list[str]]:
@@ -116,12 +202,18 @@ class BenchmarkRunner:
             "strategyqa": self.load_strategyqa,
             "mmlu": self.load_mmlu,
             "arc_challenge": self.load_arc_challenge,
+            "math 500": self.load_math_500,
+            "gpqa diamond": self.load_gpqa_diamond,
+            "aime": self.load_aime,
+            "mmlu pro": self.load_mmlu_pro,
         }
         if name not in loaders:
             raise ValueError(f"Unknown benchmark: {name}")
         return loaders[name]()
 
-    def compute_accuracy(self, predictions: list[str], ground_truth: list[str]) -> float:
+    def compute_accuracy(
+        self, predictions: list[str], ground_truth: list[str]
+    ) -> float:
         correct = 0
         total = len(predictions)
         for pred, truth in zip(predictions, ground_truth):
@@ -136,17 +228,19 @@ class BenchmarkRunner:
             return ""
 
         upper = text.strip().upper()
-        direct = re.search(r"\b([A-D])\b", upper)
+        direct = re.search(r"\b([A-J])\b", upper)
         if direct:
             return direct.group(1)
 
-        tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-D])\b", upper)
+        tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-J])\b", upper)
         if tagged:
             return tagged.group(1)
 
         return ""
 
-    def compute_accuracy_mcq(self, predictions: list[str], ground_truth: list[str]) -> float:
+    def compute_accuracy_mcq(
+        self, predictions: list[str], ground_truth: list[str]
+    ) -> float:
         correct = 0
         total = len(predictions)
         for pred, truth in zip(predictions, ground_truth):
@@ -166,7 +260,7 @@ class BenchmarkRunner:
                 pred = pipeline_fn(q)
                 predictions.append(pred)
 
-            if benchmark_name in {"mmlu", "arc_challenge"}:
+            if benchmark_name in {"mmlu", "arc_challenge", "gpqa diamond", "mmlu pro"}:
                 accuracy = self.compute_accuracy_mcq(predictions, answers)
             else:
                 accuracy = self.compute_accuracy(predictions, answers)
@@ -197,7 +291,7 @@ class BenchmarkRunner:
             preds_qubo = []
 
             for i in range(0, len(questions), batch_size):
-                batch_q = questions[i:i + batch_size]
+                batch_q = questions[i : i + batch_size]
                 if batch_fn_greedy:
                     preds_greedy.extend(batch_fn_greedy(batch_q))
                 else:
@@ -213,7 +307,7 @@ class BenchmarkRunner:
                 for q in batch_q:
                     preds_qubo.append(qubo_fn(q))
 
-            if benchmark_name in {"mmlu", "arc_challenge"}:
+            if benchmark_name in {"mmlu", "arc_challenge", "gpqa diamond", "mmlu pro"}:
                 acc_g = self.compute_accuracy_mcq(preds_greedy, answers)
                 acc_c = self.compute_accuracy_mcq(preds_cot, answers)
                 acc_q = self.compute_accuracy_mcq(preds_qubo, answers)
@@ -228,6 +322,11 @@ class BenchmarkRunner:
                 "abs_gain_vs_greedy": acc_q - acc_g,
                 "cot_gain_over_greedy": acc_c - acc_g,
             }
-            print(f"  [{benchmark_name}] Greedy: {acc_g:.2%} | CoT: {acc_c:.2%} | QUBO: {acc_q:.2%}")
+            print(
+                f"  [{benchmark_name}] Greedy: {acc_g:.2%} | CoT: {acc_c:.2%} | QUBO: {acc_q:.2%}"
+            )
+            print(
+                f"  [{benchmark_name}] Greedy: {acc_g:.2%} | CoT: {acc_c:.2%} | QUBO: {acc_q:.2%}"
+            )
 
         return results
