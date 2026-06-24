@@ -86,6 +86,8 @@ score = 0.6 × gold_match + 0.4 × arithmetic_consistency
 
 - **Gold match (lines 70–83):** Extract last number from both the gold answer and the candidate's `reason` using regex `r"-?\d+(?:\.\d+)?"` (line 49). If `abs(pred - gold) < 0.01` → `1.0`, else `0.0`. Falls back to `predicted_answer` field if reason doesn't match (lines 78–81).
 
+  **Example:** Gold = `12`, reason = `"3z - 7 = 2z + 5 → 3z - 2z = 5 + 7 → z = 12"` → extracts `12`, matches gold → gold_match = `1.0`.<br>**Example:** Gold = `12`, reason = `"x = 11"` → extracts `11`, no match → gold_match = `0.0`.
+
 - **Arithmetic consistency (lines 59–67):** Extract all `a OP b` computations via regex `r"(\d+\.?\d*)\s*([+\-*/])\s*(\d+\.?\d*)"` (line 32). If none found → base = `0.3` (line 61). If found:
   ```
   diffs = |result_i - result_{i+1}|  for each consecutive pair
@@ -94,7 +96,16 @@ score = 0.6 × gold_match + 0.4 × arithmetic_consistency
   ```
   Small differences between consecutive computation results → consistency near `1.0`. Large differences → near `0.0`. A single computation → `1.0`. No computations → `0.3`.
 
+  **Examples:**
+  - Reason `"12 + 8 = 20; 20 / 4 = 5"` → computations `[20.0, 5.0]` → diff `|20-5| = 15` → mean = 15 → consistency = `1/(1+15)` = **0.0625**
+  - Reason `"10 + 10 = 20; 20 - 10 = 10; 10 * 3 = 30"` → computations `[20, 10, 30]` → diffs `[10, 20]` → mean = 15 → consistency = `1/16` = **0.0625**
+  - Reason `"24 = 24; 24 = 24"` → computations `[24, 24, 24]` → diffs `[0, 0]` → mean = 0 → consistency = `1/1` = **1.0**
+  - Reason `"x = 5"` (no `a OP b` pattern) → no computations → base = **0.3**
+  - Reason `"2 + 2 = 4"` (single computation) → consistency = **1.0**
+
 - **No gold match** (line 83): `return 0.6*0.0 + 0.4*base` — score becomes purely `0.4 × base`, max `0.40` (wrong answer but self-consistent arithmetic still rewarded for diversity).
+
+  **Example:** Gold = `12`, candidate predicts `11` with perfect arithmetic (`2+2=4`, single comp → base=1.0): score = `0.6×0.0 + 0.4×1.0` = **0.40**.<br>**Example:** Same wrong answer but no arithmetic found (base=0.3): score = `0.6×0.0 + 0.4×0.3` = **0.12**.
 
 **Commonsense Mode (`verify_commonsense`, lines 87–97):**
 ```
@@ -103,6 +114,60 @@ score = P(entailment | premise=reason, hypothesis=answer)
 Uses `cross-encoder/nli-deberta-v3-base`: tokenize reason + answer, run through NLI model, softmax over 3 logits (entailment/contradiction/neutral), return entailment probability at `probs[0][0]` (line 96).
 
 **Batch scoring (`score_batch`, lines 105–114):** Iterates samples, calls `verify()`, stores `sample["correctness_score"]` for later use in QUBO diagonal terms.
+
+### 4.2 Detailed QUBO Matrix & Selection Logic
+
+**QUBO Builder (`pipeline/qubo_builder.py`) — `build_qubo()` line 49:**
+
+1. **Embed + cluster (lines 50–63):** 384-dim embeddings via `all-MiniLM-L6-v2`, KMeans (≤50 clusters), pick best-scoring sample per cluster → max 200 variables.
+
+2. **Build Q matrix (lines 67–79):**
+   ```
+   Q[i][i] = -correctness_score + diversity_bonus      (line 72, bonus=0.5)
+   Q[i][j] = cosine_similarity(embed_i, embed_j) × penalty_weight  (line 78, weight=2.0)
+   ```
+   Objective to minimize: `E(x) = x^T Q x` where `x ∈ {0,1}^n`.
+   - Negative diagonal = reward selecting high-quality traces
+   - Positive off-diagonal = penalty for picking two similar traces (redundancy)
+
+   **Example:** 3 candidates with scores [0.9, 0.5, 0.2] and cosine similarities [[1, 0.8, 0.3], [0.8, 1, 0.4], [0.3, 0.4, 1]]:
+   ```
+   Q[0][0] = -0.9 + 0.5 = -0.4    (best trace, strongly encouraged)
+   Q[1][1] = -0.5 + 0.5 =  0.0    (neutral)
+   Q[2][2] = -0.2 + 0.5 =  0.3    (weak trace, slightly discouraged)
+   Q[0][1] = 0.8 × 2.0 = 1.6      (similar to best → big penalty if both selected)
+   Q[0][2] = 0.3 × 2.0 = 0.6      (dissimilar → small penalty)
+   Q[1][2] = 0.4 × 2.0 = 0.8
+   ```
+   If solver selects `x = [1, 0, 1]` (trace 0 + trace 2): `E = -0.4 + 0.3 + 0.6 = 0.5`.<br>If solver selects `x = [1, 1, 0]` (trace 0 + trace 1): `E = -0.4 + 0.0 + 1.6 = 1.2` (more energy → worse).
+
+3. **HUBO extension (lines 83–107):** Adds triplet penalty:
+   ```
+   T[(i,j,k)] = mean_similarity(i,j,k) × hubo_triplet_penalty
+   energy = x^T Q x + Σ T[ijk] · x_i · x_j · x_k
+   ```
+
+**Solver (`pipeline/solver.py`) — `_solve_cpu()` line 51:**
+
+1. Start random binary state (line 56)
+2. For 500 iterations (line 59): flip one bit (line 61), compute ΔE (line 63)
+3. Accept if `Δ < 0` or `random() < exp(-Δ/T)` (line 64), else revert (line 67)
+4. Cool: `T ← max(0.01, T × 0.99)` from 100.0 (line 68)
+5. Repeat 2 reads (line 55), keep best energy (lines 69–71)
+
+   **Example:** Q matrix from above, 3 variables. Initial state `[0,1,1]`, energy = `0.0 + 0.3 + 0.8 = 1.1`.
+   - Flip bit 0 → state `[1,1,1]`, energy = `-0.4 + 0.0 + 0.3 + 1.6 + 0.6 + 0.8 = 2.9`. Δ = +1.8 → likely rejected.
+   - Flip bit 2 → state `[0,1,0]`, energy = `0.0`. Δ = -1.1 → accepted (improvement).
+   - Temperature cools from 100 → 0.01 over 500 steps, so early aggressive exploration, late fine-tuning.
+
+GPU solver (`_solve_gpu()` line 74): 1024 parallel chains via `torch.einsum('ri,ij,rj->r', states, Q, states)` — ~100× faster.
+
+Advanced: parallel tempering (line 97, swaps between temperature replicas every 10 steps) and counterdiabatic annealing (line 144, momentum term `cd_correction` to escape local minima).
+
+**Inference (`pipeline/inference.py`) — `run()` line 288:**
+- Selected reasons re-ranked by cosine similarity to question embedding (line 121–125)
+- Composited into prompt: "Here are some reasoning steps: ... Based on these, answer: ..."
+- LLM generates final answer greedily (line 296)
 
 ## 5) Estimated improvement vs baselines
 
