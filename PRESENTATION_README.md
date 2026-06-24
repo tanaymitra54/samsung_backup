@@ -75,6 +75,35 @@ In plain words: "Generate many ideas -> filter smartly -> answer better."
    - **What we do:** We collect high-quality QUBO-selected traces and convert them into supervised fine-tuning data (LoRA/SFT rounds), then re-run pipeline with the improved model.
    - **Why this fixes it:** The model gradually learns to generate better initial reasons, which further improves downstream QUBO selection in a positive feedback loop.
 
+### 4.1 Detailed Verifier Scoring Math (`pipeline/verifier.py`)
+
+The verifier assigns a `correctness_score` ∈ [0, 1] to each generated reasoning trace.
+
+**Math Mode (`verify_math`, lines 58–85):**
+```
+score = 0.6 × gold_match + 0.4 × arithmetic_consistency
+```
+
+- **Gold match (lines 70–83):** Extract last number from both the gold answer and the candidate's `reason` using regex `r"-?\d+(?:\.\d+)?"` (line 49). If `abs(pred - gold) < 0.01` → `1.0`, else `0.0`. Falls back to `predicted_answer` field if reason doesn't match (lines 78–81).
+
+- **Arithmetic consistency (lines 59–67):** Extract all `a OP b` computations via regex `r"(\d+\.?\d*)\s*([+\-*/])\s*(\d+\.?\d*)"` (line 32). If none found → base = `0.3` (line 61). If found:
+  ```
+  diffs = |result_i - result_{i+1}|  for each consecutive pair
+  consistency = 1.0 / (1.0 + mean(diffs))
+  base = min(1.0, consistency)
+  ```
+  Small differences between consecutive computation results → consistency near `1.0`. Large differences → near `0.0`. A single computation → `1.0`. No computations → `0.3`.
+
+- **No gold match** (line 83): `return 0.6*0.0 + 0.4*base` — score becomes purely `0.4 × base`, max `0.40` (wrong answer but self-consistent arithmetic still rewarded for diversity).
+
+**Commonsense Mode (`verify_commonsense`, lines 87–97):**
+```
+score = P(entailment | premise=reason, hypothesis=answer)
+```
+Uses `cross-encoder/nli-deberta-v3-base`: tokenize reason + answer, run through NLI model, softmax over 3 logits (entailment/contradiction/neutral), return entailment probability at `probs[0][0]` (line 96).
+
+**Batch scoring (`score_batch`, lines 105–114):** Iterates samples, calls `verify()`, stores `sample["correctness_score"]` for later use in QUBO diagonal terms.
+
 ## 5) Estimated improvement vs baselines
 
 ### GSM8K projected cumulative path
