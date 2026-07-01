@@ -1,0 +1,43 @@
+query_idx,query,method_code,method_name,k_selected,selected_indices,common_qubo_energy,avg_redundancy,avg_relevance,runtime_s
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",BASE,Textbook QUBO (yours),6,5;21;22;0;18;14,-2.0636,0.0287,0.1454,0.0555
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[5],Self-Consistency,6,0;1;2;3;4;5,-0.9419,0.0596,0.035,0.0001
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[6],Tree-of-Thoughts,6,5;11;17;21;22;23,-1.6677,0.0451,0.1454,0.0006
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[7],Ranked-Voting SC,6,0;6;7;12;13;18,-0.9961,0.0336,0.0,0.0001
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[8],Combinatorial Reasoning,6,21;22;16;18;19;20,-1.2955,0.0488,0.0924,0.113
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[9],QCR-LLM (HUBO),6,21;5;0;1;2;3,-1.7587,0.0196,0.114,0.3766
+1,"If x + y = 10 and x - y = 4, find the values of x and y.",[10],DQO bias-field,6,21;12;13;14;15;16,-1.4561,0.0255,0.068,0.0202
+2,A train travels 120 km in 2 hours. If it speeds up by 20 km/,BASE,Textbook QUBO (yours),6,5;0;18;14;6;19,-1.3588,0.0198,0.0,0.042
+2,A train travels 120 km in 2 hours. If it speeds up by 20 km/,[5],Self-Consistency,6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.0
+2,A train travels 120 km in 2 hours. If it speeds up by 20 km/,[6],Tree-of-Thoughts,6,4;5;10;11;17;23,-0.8606,0.0244,0.0,0.0005
+2,A train travels 120 km in 2 hours. If it speeds up by 20 km/,[7],Ranked-Voting SC,6,0;6;7;12;13;18,-0.9961,0.0336,0.0,0.0001
+2,A train travels 120 km in 2 hours. If it speeds up by 20 km/,[8],Combinatorial Reasoning,6,9;12;13;14;15;16,-0.8164,0.0715,0.0,0.0942
+2,A train travels 120 km in 2 hours. If it speeds up by 20 km/,[9],QCR-LLM (HUBO),6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.3936
+2,A train travels 120 km in 2 hours. If it speeds up by 20 km/,[10],DQO bias-field,6,3;5;12;13;14;15,-1.1894,0.0248,0.0,0.0269
+3,A rectangle has perimeter 36 cm and its length is twice its ,BASE,Textbook QUBO (yours),6,5;0;18;14;6;19,-1.3588,0.0198,0.0,0.0453
+3,A rectangle has perimeter 36 cm and its length is twice its ,[5],Self-Consistency,6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.0
+3,A rectangle has perimeter 36 cm and its length is twice its ,[6],Tree-of-Thoughts,6,4;5;10;11;17;23,-0.8606,0.0244,0.0,0.0006
+3,A rectangle has perimeter 36 cm and its length is twice its ,[7],Ranked-Voting SC,6,0;6;7;12;13;18,-0.9961,0.0336,0.0,0.0001
+3,A rectangle has perimeter 36 cm and its length is twice its ,[8],Combinatorial Reasoning,6,9;12;13;14;15;16,-0.8164,0.0715,0.0,0.0956
+3,A rectangle has perimeter 36 cm and its length is twice its ,[9],QCR-LLM (HUBO),6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.3801
+3,A rectangle has perimeter 36 cm and its length is twice its ,[10],DQO bias-field,6,3;5;12;13;14;15,-1.1894,0.0248,0.0,0.0196
+4,Solve for z: 3z - 7 = 2z + 5.,BASE,Textbook QUBO (yours),6,3;6;5;0;14;19,-1.645,0.0511,0.0658,0.0402
+4,Solve for z: 3z - 7 = 2z + 5.,[5],Self-Consistency,6,0;1;2;3;4;5,-0.9852,0.0596,0.0487,0.0
+4,Solve for z: 3z - 7 = 2z + 5.,[6],Tree-of-Thoughts,6,3;4;5;11;17;23,-0.7776,0.0643,0.0454,0.0006
+4,Solve for z: 3z - 7 = 2z + 5.,[7],Ranked-Voting SC,6,0;6;7;12;13;18,-1.2183,0.0336,0.0381,0.0001
+4,Solve for z: 3z - 7 = 2z + 5.,[8],Combinatorial Reasoning,6,3;12;13;14;15;16,-1.1778,0.0551,0.0487,0.0939
+4,Solve for z: 3z - 7 = 2z + 5.,[9],QCR-LLM (HUBO),6,3;0;1;2;4;5,-0.9852,0.0596,0.0487,0.3661
+4,Solve for z: 3z - 7 = 2z + 5.,[10],DQO bias-field,6,3;0;12;13;14;15,-1.4484,0.0173,0.0454,0.0193
+5,A shop sells apples for $0.50 each and oranges for $0.75 eac,BASE,Textbook QUBO (yours),6,5;0;18;14;6;19,-1.3588,0.0198,0.0,0.0406
+5,A shop sells apples for $0.50 each and oranges for $0.75 eac,[5],Self-Consistency,6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.0
+5,A shop sells apples for $0.50 each and oranges for $0.75 eac,[6],Tree-of-Thoughts,6,4;5;10;11;17;23,-0.8606,0.0244,0.0,0.0006
+5,A shop sells apples for $0.50 each and oranges for $0.75 eac,[7],Ranked-Voting SC,6,0;6;7;12;13;18,-0.9961,0.0336,0.0,0.0001
+5,A shop sells apples for $0.50 each and oranges for $0.75 eac,[8],Combinatorial Reasoning,6,9;12;13;14;15;16,-0.8164,0.0715,0.0,0.0941
+5,A shop sells apples for $0.50 each and oranges for $0.75 eac,[9],QCR-LLM (HUBO),6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.3667
+5,A shop sells apples for $0.50 each and oranges for $0.75 eac,[10],DQO bias-field,6,3;5;12;13;14;15,-1.1894,0.0248,0.0,0.0193
+6,All cats are mammals. Some mammals are predators. Can we con,BASE,Textbook QUBO (yours),6,5;0;18;14;6;19,-1.3588,0.0198,0.0,0.0404
+6,All cats are mammals. Some mammals are predators. Can we con,[5],Self-Consistency,6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.0
+6,All cats are mammals. Some mammals are predators. Can we con,[6],Tree-of-Thoughts,6,4;5;10;11;17;23,-0.8606,0.0244,0.0,0.0006
+6,All cats are mammals. Some mammals are predators. Can we con,[7],Ranked-Voting SC,6,0;6;7;12;13;18,-0.9961,0.0336,0.0,0.0001
+6,All cats are mammals. Some mammals are predators. Can we con,[8],Combinatorial Reasoning,6,9;12;13;14;15;16,-0.8164,0.0715,0.0,0.0938
+6,All cats are mammals. Some mammals are predators. Can we con,[9],QCR-LLM (HUBO),6,0;1;2;3;4;5,-0.6768,0.0596,0.0,0.3652
+6,All cats are mammals. Some mammals are predators. Can we con,[10],DQO bias-field,6,3;5;12;13;14;15,-1.1894,0.0248,0.0,0.0192
