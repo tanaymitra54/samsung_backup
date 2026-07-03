@@ -1,3 +1,63 @@
+"""
+pipeline/inference.py  —  Final Answer Generation
+==================================================
+
+ROLE IN THE PIPELINE
+─────────────────────
+Once the QUBO solver (solver.py) has selected the best subset of reasoning
+traces, this module uses them to generate the final answer.
+
+The core idea is CHAIN-OF-THOUGHT SCAFFOLDING:
+  Instead of asking the model to answer the question cold, we inject the
+  selected reasoning traces into the prompt as "hints". The model then
+  reads these high-quality, non-redundant reasons and synthesises a final
+  answer that is grounded in them.
+
+  This is analogous to giving a student the worked examples from a textbook
+  before asking them to solve a novel problem. The reasoning traces act as
+  structured prior knowledge that guides the model's generation.
+
+WHY DOES THIS IMPROVE PERFORMANCE?
+  Research on chain-of-thought prompting (Wei et al., 2022) shows that
+  explicitly providing intermediate reasoning steps dramatically improves
+  LLM performance on multi-step reasoning tasks. Our QUBO selection step
+  ensures the injected traces are:
+    1. HIGH QUALITY      (scored by the verifier)
+    2. NON-REDUNDANT     (diverse subset chosen by the QUBO solver)
+    3. RELEVANT-ORDERED  (re-ranked by semantic similarity to the question)
+
+  The combination of quality filtering + diversity selection + relevance
+  ordering makes our chain-of-thought scaffold substantially better than
+  naive top-K selection or random sampling of reasons.
+
+  STEPS IN run():
+  1. Extract the text of QUBO-selected reasons from the samples list.
+  2. Re-rank the selected reasons by their semantic similarity to the
+     original question (most relevant first).
+  3. Build the final prompt with reasons listed as numbered steps.
+  4. Generate the answer using the main language model (greedy decode).
+
+PHASE 2 TODO — SEPARATE FINAL-ANSWER MODEL:
+  The current pipeline uses the same LLM for BOTH (a) generating the 20+
+  candidate reasoning chains and (b) synthesising the final answer from the
+  QUBO-selected subset. This circularity means the model's systematic biases
+  and failure modes propagate all the way through — if the model consistently
+  makes a particular reasoning error, it will appear in the chains AND be
+  carried into the final answer generation.
+
+  The ideal fix is to use a SEPARATE, STRONGER model for step (b) only.
+  Step (b) requires only ONE forward pass (not 20), so the VRAM cost is a
+  one-time expense rather than a multiplied one. A stronger model reading
+  the curated, QUBO-selected chains would be less susceptible to reproducing
+  the weaker model's systematic errors.
+
+  This is deferred until the A100 is available. At that point:
+    1. Load the sampling/scoring model on GPU 0 (or quantised on GPU 1).
+    2. Load a larger synthesis model (e.g., Llama-3-70B or Mixtral-8x7B)
+       on GPU 1 (or split across both).
+    3. Route run() to use the synthesis model for generate_answer().
+"""
+
 import gc
 import yaml
 import torch
@@ -119,14 +179,63 @@ class InferencePipeline:
         return self.model_input_device
 
     def _rank_reasons_by_relevance(self, reasons: list[str], question: str) -> list[int]:
+        """
+        Re-rank the selected reasons by their semantic similarity to the question.
+
+        Returns a list of indices into `reasons` sorted from most to least relevant.
+
+        WHY RE-RANK AFTER QUBO SELECTION:
+        The QUBO solver selects reasons based on their quality (verifier score)
+        and pairwise diversity (off-diagonal redundancy penalty). It does NOT
+        rank them by their relevance to the specific question.
+
+        When multiple selected reasons are injected into the final prompt,
+        LLMs are known to exhibit PRIMACY BIAS — they pay more attention to
+        the first items in a list than later ones. By placing the most relevant
+        reasons first, we ensure the model's attention is anchored on the most
+        pertinent evidence before it encounters supporting context.
+
+        HOW RELEVANCE IS COMPUTED:
+        We encode both the question and each reason using the same MiniLM-L6-v2
+        embedder. Cosine similarity between a reason's embedding and the question
+        embedding is a reliable proxy for semantic relevance. This is fast
+        (embedding is cached from the QUBO step's embedder) and model-free.
+        """
         reason_embs = self.embedder.encode(reasons, convert_to_numpy=True)
-        query_emb = self.embedder.encode([question], convert_to_numpy=True)
+        query_emb   = self.embedder.encode([question], convert_to_numpy=True)
         similarities = cosine_similarity(reason_embs, query_emb).flatten()
         return np.argsort(similarities)[::-1]
 
     def build_final_prompt(
         self, question: str, selected_reasons: list[str]
     ) -> str:
+        """
+        Construct the chain-of-thought prompt for final answer generation.
+
+        PROMPT STRUCTURE:
+            "Here are some reasoning steps:
+             1. <most relevant reason>
+             2. <second reason>
+             ...
+             Based on these steps, answer the following question.
+             Question: <question>
+             Answer:"
+
+        WHY THIS STRUCTURE:
+          • Listing reasons as NUMBERED STEPS establishes a clear causal chain
+            and mirrors the format the model sees during chain-of-thought training.
+          • The instruction "Based on these steps..." explicitly conditions the
+            model to treat the reasons as its reasoning scaffold, not as context
+            to be ignored.
+          • "Answer:" at the end with no content triggers the model's learned
+            completion pattern for answer generation.
+
+        WHY SUBSET_SIZE MATTERS:
+          We use at most `subset_size` reasons (from config). Too many reasons
+          overflow the context window; too few may miss key information. The
+          QUBO solver's diversity guarantee means even a small subset covers
+          different reasoning paths.
+        """
         K = min(self.subset_size, len(selected_reasons))
         top_reasons = selected_reasons[:K]
 

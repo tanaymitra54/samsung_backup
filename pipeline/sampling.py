@@ -1,3 +1,50 @@
+"""
+pipeline/sampling.py  —  Diverse Reasoning Trace Sampler
+=========================================================
+
+ROLE IN THE PIPELINE
+─────────────────────
+The QUBO selection stage (qubo_builder.py) needs a LARGE, DIVERSE POOL of
+candidate reasoning traces to select from. The bigger and more varied the
+pool, the better the chance that the pool contains at least a few high-quality,
+non-redundant reasons that the solver can pick.
+
+This module generates that pool by sampling from the language model with two
+forms of deliberate diversity:
+
+  1. PROMPT PERTURBATIONS (perturb_prompt):
+     The same mathematical/factual question is wrapped in 4 different prompt
+     framings ("step by step", "think carefully", "work through logically",
+     "break this down"). LLMs are highly sensitive to prompt framing — the
+     same model given the same question but different system instructions
+     often produces qualitatively different reasoning paths. This increases
+     the structural diversity of the candidate pool.
+
+  2. TEMPERATURE RANDOMISATION:
+     For each perturbation, we sample `num_answers` completions at a randomly
+     chosen temperature from [temperature_range_low, temperature_range_high].
+
+     WHY RANDOM TEMPERATURE:
+     • Low temperature (≈0.3): the model is more deterministic and confident —
+       produces focused, consistent reasoning but low diversity.
+     • High temperature (≈0.9): the model is more exploratory — produces
+       creative/diverse reasoning but occasionally incoherent.
+     • Randomising temperature across samples gets the best of both worlds:
+       some samples are reliable anchors, others explore different paths.
+
+     The verifier's quality score (correctness_score) later filters out the
+     incoherent high-temperature samples, so the risk of including bad traces
+     is managed by the QUBO scoring step, not the sampling step.
+
+OUTPUT FORMAT:
+  Each sampled trace is a dict with keys:
+    'reason'           : the reasoning text (all lines except the answer line)
+    'answer'           : the final answer line (extracted heuristically)
+    'diversity_score'  : placeholder (0.0 at sampling time; computed later)
+    'temperature'      : the sampling temperature used (for diagnostics)
+    'prompt_template'  : which perturbation was used (for diagnostics)
+"""
+
 import torch
 import yaml
 import random
@@ -157,6 +204,15 @@ class DiverseSampler:
         lines = text.strip().split("\n")
         answer = ""
         reason = text
+        
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i]
+            if line.strip().lower().startswith("answer:"):
+                answer = line.split(":", 1)[1].strip()
+                reason_lines = lines[:i] + lines[i+1:]
+                reason = "\n".join(reason_lines)
+                return reason.strip(), answer.strip()
+
         for line in lines:
             if "answer" in line.lower() or "therefore" in line.lower():
                 answer = line
@@ -165,21 +221,107 @@ class DiverseSampler:
                 break
         return reason.strip(), answer.strip()
 
-    def perturb_prompt(self, question: str) -> list[str]:
+    def perturb_prompt(self, question: str, task_type: str = "math") -> list[str]:
+        """
+        Wrap the question in 4 structurally distinct prompt framings.
+
+        WHY STRUCTURALLY DIVERSE PROMPTS:
+        The original 4 templates ("Let's solve step by step", "Think carefully and
+        reason step by step", "Work through this problem logically", "Break this down")
+        all elicit the same forward-reasoning strategy. LLMs with identical training
+        on any of these prompts will produce highly correlated outputs — the candidate
+        pool ends up with 4 near-identical reasoning paths, reducing the value of
+        QUBO selection.
+
+        The new templates induce qualitatively different reasoning strategies:
+
+        1. FORWARD (anchor)
+           "Starting from the given information, work forward step by step to reach
+           the answer."
+           → Elicits the standard chain-of-thought: start with facts, derive conclusion.
+             This is the most reliable template for small models. The "given information"
+             framing nudges the model to enumerate knowns before computing.
+
+        2. BACKWARD (monitor — weak on 3B-scale models)
+           "Start from what the answer must satisfy and work backward to verify it
+           from the given facts."
+           → Elicits goal-directed reasoning. Theoretically powerful for constraint
+             satisfaction and multi-step deduction, but 3B-scale models often produce
+             circular or incoherent outputs when asked to reason backward.
+           MONITOR: If chains from this template consistently score near zero in the
+           verifier, disable it for that dataset by removing it from this list.
+
+        3. ANALOGICAL
+           "This problem is similar to one where you identify a pattern or analogy.
+           Use that to reason through it."
+           → Elicits pattern-matching and structural reasoning. Useful when the problem
+             has a common structure (e.g., ratio problems, sequence problems). Less
+             reliable for novel problem types.
+
+        4. UNITS-FIRST (math) / BREAK-IT-DOWN (commonsense)
+           Math:        "Identify the units and quantities involved, then compute step
+                         by step."
+           Commonsense: "Break this down and solve."
+           → For math, the units-first framing anchors dimensional analysis before
+             arithmetic, reducing unit-conversion errors. For commonsense, the
+             "break it down" framing encourages enumeration of sub-problems.
+             This template is task-type-aware.
+
+        CALL SIGNATURE:
+          task_type = "math"      → uses units-first variant for template 4
+          task_type = anything else → uses commonsense variant for template 4
+        """
+        suffix = "\nPlease put your final answer on a new line starting with 'Answer:'"
+        # Template 4: task-type-aware
+        if task_type == "math":
+            template_4 = (
+                f"Identify the units and quantities involved, then compute step by step.\n"
+                f"Question: {question}{suffix}"
+            )
+        else:
+            template_4 = f"Break this down and solve.\nQuestion: {question}{suffix}"
+
         perturbations = [
-            f"Let's solve this step by step.\nQuestion: {question}",
-            f"Think carefully and reason step by step.\nQuestion: {question}",
-            f"Work through this problem logically.\nQuestion: {question}",
-            f"Break this down and solve.\nQuestion: {question}",
+            # Template 1: Forward reasoning (anchor)
+            f"Starting from the given information, work forward step by step to reach the answer.\nQuestion: {question}{suffix}",
+            # Template 2: Backward reasoning (monitor on small models)
+            f"Start from what the answer must satisfy and work backward to verify it from the given facts.\nQuestion: {question}{suffix}",
+            # Template 3: Analogical reasoning
+            f"This problem is similar to one where you identify a pattern or analogy. Use that to reason through it.\nQuestion: {question}{suffix}",
+            # Template 4: Units-first (math) or break-it-down (commonsense)
+            template_4,
         ]
         return perturbations
 
-    def sample(self, question: str) -> list[dict]:
+
+    def sample(self, question: str, task_type: str = "math") -> list[dict]:
+        """
+        Generate a diverse pool of (reason, answer) pairs for a single question.
+
+        TOTAL SAMPLES GENERATED:
+            len(perturbations) × num_answers  (default: 4 × 4 = 16 candidates)
+
+        Each sample is independently drawn at a random temperature drawn from
+        [temperature_range[0], temperature_range[1]] (e.g., 0.3 to 0.9).
+        This gives every sample a different exploration/exploitation trade-off.
+
+        After sampling, the calling pipeline calls verifier.score_batch() to
+        assign correctness_score to each sample, then qubo_builder.build_qubo()
+        to select the best non-redundant subset.
+
+        NOTE: 'diversity_score' is initialised to 0.0 here. It is not used in
+        the current QUBO formulation (diversity is handled implicitly by the
+        off-diagonal redundancy penalty). The field is preserved for potential
+        future use (e.g., explicit diversity pre-filtering before QUBO).
+        """
         all_samples = []
-        perturbations = self.perturb_prompt(question)
+        perturbations = self.perturb_prompt(question, task_type=task_type)
 
         for prompt_temp in perturbations:
             for _ in range(self.num_answers):
+                # Draw a fresh temperature for each sample.
+                # Different temperatures within the same perturbation produce
+                # different levels of linguistic creativity in the output.
                 temp = random.uniform(
                     self.config["pipeline"]["temperature_range"][0],
                     self.config["pipeline"]["temperature_range"][1],
@@ -187,12 +329,16 @@ class DiverseSampler:
                 generated = self.generate_with_contrastive_decode(
                     prompt_temp, temperature=temp
                 )
+                # Parse the raw generated text into a structured (reason, answer) pair.
+                # The reason is the reasoning chain; the answer is the final conclusion.
                 reason, answer = self._parse_reason_answer(generated)
                 all_samples.append({
                     "reason": reason,
                     "answer": answer,
-                    "diversity_score": 0.0,
-                    "temperature": temp,
-                    "prompt_template": prompt_temp,
+                    "diversity_score": 0.0,   # populated later if needed
+                    "temperature": temp,       # retained for diagnostics / ablations
+                    "prompt_template": prompt_temp,  # retained for diagnostics
+                    "task_type": task_type,    # retained for diagnostics
                 })
         return all_samples
+
