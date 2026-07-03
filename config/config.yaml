@@ -14,8 +14,8 @@ pipeline:
     num_answers: 4
     num_reasons: 4
     subset_size: 6
-    max_new_tokens: 256
-    sampling_max_new_tokens: 256
+    max_new_tokens: 512
+    sampling_max_new_tokens: 512
     temperature_range: [0.3, 0.9]
     top_p: 0.95
 

@@ -615,7 +615,16 @@ pie title Maturity Distribution
 
 ---
 
-## 17) Acknowledgements
+## 17) Recent Updates & Fixes
+
+- **Robust Answer Parsing**: Improved `_parse_reason_answer` to dynamically locate the final `Answer:` block for accurate reasoning/answer splitting.
+- **Enhanced Token Limits**: Expanded `max_new_tokens` limits (up to 512) for both chain generation and final synthesis to accommodate complex, multi-step math problems without truncating outputs.
+- **Regex Boundary Matching**: Replaced naive exact-string matching with regex word-boundary matching in evaluation for robust grading of language and commonsense tasks.
+- **Terminal UI Fixes**: Sanitized LLM outputs by replacing newlines to prevent terminal overwriting and graphical glitches in the CLI.
+
+---
+
+## 18) Acknowledgements
 
 - Hugging Face ecosystem (`transformers`, `datasets`)
 - Sentence-Transformers for semantic embeddings
@@ -623,7 +632,7 @@ pie title Maturity Distribution
 
 ---
 
-## 18) Citation
+## 19) Citation
 
 If you use this project in reports or demos, cite as:
 

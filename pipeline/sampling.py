@@ -204,6 +204,15 @@ class DiverseSampler:
         lines = text.strip().split("\n")
         answer = ""
         reason = text
+        
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i]
+            if line.strip().lower().startswith("answer:"):
+                answer = line.split(":", 1)[1].strip()
+                reason_lines = lines[:i] + lines[i+1:]
+                reason = "\n".join(reason_lines)
+                return reason.strip(), answer.strip()
+
         for line in lines:
             if "answer" in line.lower() or "therefore" in line.lower():
                 answer = line
@@ -262,22 +271,23 @@ class DiverseSampler:
           task_type = "math"      → uses units-first variant for template 4
           task_type = anything else → uses commonsense variant for template 4
         """
+        suffix = "\nPlease put your final answer on a new line starting with 'Answer:'"
         # Template 4: task-type-aware
         if task_type == "math":
             template_4 = (
                 f"Identify the units and quantities involved, then compute step by step.\n"
-                f"Question: {question}"
+                f"Question: {question}{suffix}"
             )
         else:
-            template_4 = f"Break this down and solve.\nQuestion: {question}"
+            template_4 = f"Break this down and solve.\nQuestion: {question}{suffix}"
 
         perturbations = [
             # Template 1: Forward reasoning (anchor)
-            f"Starting from the given information, work forward step by step to reach the answer.\nQuestion: {question}",
+            f"Starting from the given information, work forward step by step to reach the answer.\nQuestion: {question}{suffix}",
             # Template 2: Backward reasoning (monitor on small models)
-            f"Start from what the answer must satisfy and work backward to verify it from the given facts.\nQuestion: {question}",
+            f"Start from what the answer must satisfy and work backward to verify it from the given facts.\nQuestion: {question}{suffix}",
             # Template 3: Analogical reasoning
-            f"This problem is similar to one where you identify a pattern or analogy. Use that to reason through it.\nQuestion: {question}",
+            f"This problem is similar to one where you identify a pattern or analogy. Use that to reason through it.\nQuestion: {question}{suffix}",
             # Template 4: Units-first (math) or break-it-down (commonsense)
             template_4,
         ]
