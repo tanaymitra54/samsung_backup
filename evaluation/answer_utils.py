@@ -11,31 +11,33 @@ def extract_gsm8k_gold(answer_text: str) -> str:
 
 def extract_predicted_answer(prediction: str, is_mcq: bool = False) -> str:
     """Extract answer from prediction.
-    
+
     Args:
         prediction: Model's raw output
         is_mcq: If True, extract MCQ choice (A/B/C/D), else extract numeric answer
     """
     if not prediction:
         return ""
-    
+
     if is_mcq:
-        # MCQ: Look for A, B, C, D
+        # MCQ: Look for A, B, C, D, E, F, G, H, I, J
         upper = prediction.strip().upper()
         # Look for explicit "ANSWER: X" or "CORRECT ANSWER IS X"
-        tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-D])\b", upper)
+        tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-J])\b", upper)
         if tagged:
             return tagged.group(1)
         # Look for explicit "CORRECT ANSWER IS X" pattern
-        explicit = re.search(r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-D])\b", upper)
+        explicit = re.search(
+            r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-J])\b", upper
+        )
         if explicit:
             return explicit.group(1)
         # Look for single letter answer (first occurrence)
-        direct = re.search(r"\b([A-D])\b", upper)
+        direct = re.search(r"\b([A-J])\b", upper)
         if direct:
             return direct.group(1)
         # Last resort: return first letter found anywhere
-        all_letters = re.findall(r"[A-D]", upper)
+        all_letters = re.findall(r"[A-J]", upper)
         return all_letters[0] if all_letters else ""
     else:
         # Numerical answer
@@ -63,7 +65,7 @@ def normalize_numeric_answer(text: str) -> str:
 
 def is_correct_prediction(pred: str, gold: str, is_mcq: bool = False) -> bool:
     """Check if prediction is correct.
-    
+
     Args:
         pred: Predicted answer
         gold: Gold answer
