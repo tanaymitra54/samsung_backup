@@ -133,11 +133,12 @@ def load_config(config_path: str, qubo_params_path: str) -> dict:
 
 
 def load_model_bfloat16(config: dict, device: str) -> tuple:
-    """Load model in bfloat16 without quantization (for H100)."""
+    """Load model in bfloat16 on a single CUDA device."""
     model_cfg = config["model"]
     model_name = model_cfg["name"]
 
     print(f"\n[Model] Loading {model_name} in bfloat16 ...")
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         cache_dir=model_cfg.get("cache_dir"),
@@ -146,16 +147,40 @@ def load_model_bfloat16(config: dict, device: str) -> tuple:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    use_cuda = device.startswith("cuda")
+    if use_cuda:
+        device_index = 0 if device == "cuda" else int(device.split(":")[1])
+        torch.cuda.set_device(device_index)
+        torch.cuda.reset_peak_memory_stats()
+        target_device = f"cuda:{device_index}"
+    else:
+        target_device = "cpu"
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         cache_dir=model_cfg.get("cache_dir"),
-        device_map="auto" if device.startswith("cuda") else None,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        # No BitsAndBytesConfig -- clean bfloat16 for training data quality
     )
+
+    if use_cuda:
+        model = model.to(target_device)
+        torch.cuda.synchronize()
+
+        allocated = torch.cuda.memory_allocated() / 1e9
+        reserved = torch.cuda.memory_reserved() / 1e9
+        peak = torch.cuda.max_memory_allocated() / 1e9
+
+        param_gb = sum(p.numel() * p.element_size() for p in model.parameters()) / 1e9
+        print(
+            f"[Model] Loaded on {target_device}. "
+            f"allocated={allocated:.2f} GB, reserved={reserved:.2f} GB, "
+            f"peak={peak:.2f} GB, params={param_gb:.2f} GB"
+        )
+    else:
+        print("[Model] Loaded on CPU.")
+
     model.eval()
-    print(f"[Model] Loaded. VRAM: {torch.cuda.memory_reserved() / 1e9:.1f} GB reserved")
     return model, tokenizer
 
 
