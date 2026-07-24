@@ -690,7 +690,43 @@ def main():
     parser.add_argument("--output-dir",  default="data",                          help="Output directory")
     parser.add_argument("--resume",      action="store_true",                      help="Resume from cached intermediate files")
     parser.add_argument("--device",      default=None,                             help="Device override (cuda/cpu)")
+    # ── Fast-run size overrides ───────────────────────────────────────────────
+    parser.add_argument("--quick",       action="store_true",
+                        help="Use reduced dataset sizes for a fast run "
+                             "(gsm8k=100, arc=60, logiqa=40, strategyqa=40, openorca=200). "
+                             "Individual --n-* flags override this.")
+    parser.add_argument("--n-gsm8k",       type=int, default=None, help="# GSM8K questions  (default: 2000)")
+    parser.add_argument("--n-arc",         type=int, default=None, help="# ARC-Challenge questions (default: 800)")
+    parser.add_argument("--n-logiqa",      type=int, default=None, help="# LogiQA questions  (default: 600)")
+    parser.add_argument("--n-strategyqa",  type=int, default=None, help="# StrategyQA questions (default: 800)")
+    parser.add_argument("--n-openorca",    type=int, default=None, help="# OpenOrca examples  (default: 1800)")
     args = parser.parse_args()
+
+    # ── Apply --quick defaults, then let explicit --n-* override ─────────────
+    QUICK_DEFAULTS = {
+        "gsm8k": 100, "arc": 60, "logiqa": 40, "strategyqa": 40, "openorca": 200
+    }
+    if args.quick:
+        for ds, val in QUICK_DEFAULTS.items():
+            if getattr(args, f"n_{ds}", None) is None:
+                setattr(args, f"n_{ds}", val)
+        print("[Quick] Using reduced dataset sizes for fast run:")
+        for ds in QUICK_DEFAULTS:
+            print(f"  {ds}: {getattr(args, f'n_{ds}')}")
+
+    # Apply overrides to DATASET_CONFIGS and OPENORCA_CONFIG in-place
+    _ds_map = {"gsm8k": "gsm8k", "arc": "arc", "logiqa": "logiqa", "strategyqa": "strategyqa"}
+    for arg_name, cfg_key in _ds_map.items():
+        override_n = getattr(args, f"n_{arg_name}", None)
+        if override_n is not None:
+            DATASET_CONFIGS[cfg_key]["n"] = override_n
+    if args.n_openorca is not None:
+        OPENORCA_CONFIG["n"] = args.n_openorca
+
+    # Recompute TOTAL_TARGET from actual dataset sizes
+    global TOTAL_TARGET
+    TOTAL_TARGET = sum(cfg["n"] for cfg in DATASET_CONFIGS.values()) + OPENORCA_CONFIG["n"]
+    print(f"[Dataset] Target total examples: {TOTAL_TARGET}")
 
     random.seed(SEED)
     np.random.seed(SEED)
