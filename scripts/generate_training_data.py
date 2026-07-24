@@ -26,6 +26,7 @@ import gc
 import json
 import math
 import os
+os.environ["HF_HUB_DISABLE_DISK_SPACE_WARNING"] = "1"
 import random
 import sys
 import time
@@ -195,8 +196,18 @@ def save_temp_config(config: dict, tmp_path: str) -> str:
 
 def load_gsm8k(n: int) -> list:
     from datasets import load_dataset
-    ds = load_dataset("gsm8k", "main", split="train")
-    rows = list(ds)
+    try:
+        ds = load_dataset("gsm8k", "main", split="train", streaming=True)
+        rows = []
+        for row in ds:
+            rows.append(row)
+            if len(rows) >= max(n * 5, 1000):
+                break
+    except Exception as e:
+        print(f"[GSM8K] Streaming failed ({e}), trying standard load...")
+        ds = load_dataset("gsm8k", "main", split="train")
+        rows = list(ds)
+
     random.seed(SEED)
     random.shuffle(rows)
     rows = rows[:n]
@@ -221,11 +232,20 @@ def load_gsm8k(n: int) -> list:
 
 def load_strategyqa(n: int) -> list:
     from datasets import load_dataset
-    # wics/strategy-qa uses a loading script that is no longer supported by
-    # newer versions of the datasets library.  voidful/StrategyQA is a
-    # parquet-backed mirror of the same data and loads without scripts.
-    ds = load_dataset("voidful/StrategyQA", split="train")
-    rows = list(ds)
+    # voidful/StrategyQA is a parquet-backed mirror. Using streaming=True avoids
+    # disk-space pre-checks (download_and_prepare) on restricted container mounts.
+    try:
+        ds = load_dataset("voidful/StrategyQA", split="train", streaming=True)
+        rows = []
+        for row in ds:
+            rows.append(row)
+            if len(rows) >= max(n * 5, 500):
+                break
+    except Exception as e:
+        print(f"[StrategyQA] Streaming load failed ({e}), trying standard load...")
+        ds = load_dataset("voidful/StrategyQA", split="train")
+        rows = list(ds)
+
     random.seed(SEED)
     random.shuffle(rows)
     rows = rows[:n]
@@ -253,8 +273,18 @@ def load_strategyqa(n: int) -> list:
 
 def load_arc(n: int) -> list:
     from datasets import load_dataset
-    ds = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="train")
-    rows = list(ds)
+    try:
+        ds = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="train", streaming=True)
+        rows = []
+        for row in ds:
+            rows.append(row)
+            if len(rows) >= max(n * 5, 500):
+                break
+    except Exception as e:
+        print(f"[ARC-Challenge] Streaming failed ({e}), trying standard load...")
+        ds = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="train")
+        rows = list(ds)
+
     random.seed(SEED)
     random.shuffle(rows)
     rows = rows[:n]
@@ -281,10 +311,18 @@ def load_arc(n: int) -> list:
 
 def load_logiqa(n: int) -> list:
     from datasets import load_dataset
-    # lucasmccabe/logiqa uses a community loading script; trust_remote_code=True
-    # is required to allow it (was always needed for script-backed datasets).
-    ds = load_dataset("lucasmccabe/logiqa", split="train", trust_remote_code=True)
-    rows = list(ds)
+    try:
+        ds = load_dataset("lucasmccabe/logiqa", split="train", streaming=True, trust_remote_code=True)
+        rows = []
+        for row in ds:
+            rows.append(row)
+            if len(rows) >= max(n * 5, 500):
+                break
+    except Exception as e:
+        print(f"[LogiQA] Streaming failed ({e}), trying standard load...")
+        ds = load_dataset("lucasmccabe/logiqa", split="train", trust_remote_code=True)
+        rows = list(ds)
+
     random.seed(SEED)
     random.shuffle(rows)
     rows = rows[:n]
