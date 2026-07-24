@@ -310,27 +310,32 @@ def load_arc(n: int) -> list:
 
 
 def load_logiqa(n: int) -> list:
-    from datasets import load_dataset
-    # lucasmccabe/logiqa has a logiqa.py loading script that is no longer
-    # supported (and trust_remote_code is also banned in newer datasets versions).
-    # HuggingFace auto-generates parquet files for such datasets; we load
-    # directly from that parquet URL to get the same data with zero script deps.
+    # lucasmccabe/logiqa ships a logiqa.py loading script that is fully banned
+    # in newer datasets versions, and trust_remote_code is also rejected.
+    # The datasets library also intercepts https://huggingface.co URLs and
+    # rewrites them as hf:// paths with broken URL-encoding, so we bypass it
+    # entirely: download the HF auto-parquet with urllib and read it with
+    # pyarrow (guaranteed present as a datasets/transformers dependency).
+    import io
+    import urllib.request
+    import pyarrow.parquet as pq
+
     _LOGIQA_PARQUET = (
         "https://huggingface.co/datasets/lucasmccabe/logiqa"
         "/resolve/refs%2Fconvert%2Fparquet/default/train/0.parquet"
     )
-    try:
-        ds = load_dataset("parquet", data_files={"train": _LOGIQA_PARQUET},
-                          split="train", streaming=True)
-        rows = []
-        for row in ds:
-            rows.append(row)
-            if len(rows) >= max(n * 5, 500):
-                break
-    except Exception as e:
-        print(f"[LogiQA] Streaming parquet failed ({e}), trying direct parquet load...")
-        ds = load_dataset("parquet", data_files={"train": _LOGIQA_PARQUET}, split="train")
-        rows = list(ds)
+    print("[LogiQA] Fetching auto-parquet from HuggingFace via urllib...")
+    req = urllib.request.Request(_LOGIQA_PARQUET,
+                                 headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        buf = io.BytesIO(resp.read())
+    table = pq.read_table(buf)
+    # Convert to list of plain Python dicts (same interface as datasets rows)
+    cols = table.column_names
+    rows = [
+        {col: table.column(col)[i].as_py() for col in cols}
+        for i in range(table.num_rows)
+    ]
 
     random.seed(SEED)
     random.shuffle(rows)
