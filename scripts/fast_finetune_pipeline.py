@@ -180,13 +180,18 @@ from pathlib import Path
 sys.path.insert(0, {repr(repo)})
 
 import yaml
+import inspect
 from datasets import Dataset
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer,
-    BitsAndBytesConfig,
+    BitsAndBytesConfig, TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer
+try:
+    from trl import SFTConfig as _TrainCls
+except ImportError:
+    _TrainCls = TrainingArguments
 
 TRAIN_FILE  = {repr(str(train_file))}
 VAL_FILE    = {repr(str(val_file))}
@@ -295,29 +300,53 @@ os.makedirs(ADAPTER_OUT, exist_ok=True)
 run_dir = str(Path(ADAPTER_OUT).parent)
 
 grad_accum = max(1, 8 // BATCH_SIZE)
-# SFTConfig inherits TrainingArguments; dataset_text_field and max_seq_length
-# were moved here from SFTTrainer in trl >= 0.8. eval_strategy replaces the
-# old evaluation_strategy name removed in transformers >= 4.46.
-training_args = SFTConfig(
-    output_dir=run_dir,
-    per_device_train_batch_size=BATCH_SIZE,
-    gradient_accumulation_steps=grad_accum,
-    learning_rate=LR,
-    warmup_ratio=0.05,
-    num_train_epochs=EPOCHS,
-    fp16=use_cuda,
-    logging_steps=10,
-    save_steps=200,
-    save_total_limit=1,
-    eval_strategy="epoch" if val_ds else "no",
-    remove_unused_columns=False,
-    report_to="none",
-    run_name=RUN_NAME,
-    dataloader_num_workers=0,
-    optim="paged_adamw_8bit" if use_cuda else "adamw_torch",
-    dataset_text_field="text",
-    max_seq_length=max_seq,
-)
+
+# Introspect _TrainCls at runtime so the script works regardless of which
+# trl / transformers version is installed on this machine.
+_sig = inspect.signature(_TrainCls.__init__).parameters
+
+# eval_strategy (transformers >= 4.46) vs evaluation_strategy (older)
+_eval_kw = "eval_strategy" if "eval_strategy" in _sig else "evaluation_strategy"
+
+# max_seq_length (trl < 0.16) vs max_length (trl >= 0.16) vs absent
+_maxlen_kw = next((k for k in ("max_seq_length", "max_length") if k in _sig), None)
+
+# dataset_text_field may live in SFTConfig or still in SFTTrainer
+_txtfld_in_cfg = "dataset_text_field" in _sig
+
+_cfg = {{
+    "output_dir": run_dir,
+    "per_device_train_batch_size": BATCH_SIZE,
+    "gradient_accumulation_steps": grad_accum,
+    "learning_rate": LR,
+    "warmup_ratio": 0.05,
+    "num_train_epochs": EPOCHS,
+    "fp16": use_cuda,
+    "logging_steps": 10,
+    "save_steps": 200,
+    "save_total_limit": 1,
+    _eval_kw: "epoch" if val_ds else "no",
+    "remove_unused_columns": False,
+    "report_to": "none",
+    "run_name": RUN_NAME,
+    "dataloader_num_workers": 0,
+    "optim": "paged_adamw_8bit" if use_cuda else "adamw_torch",
+}}
+if _txtfld_in_cfg:
+    _cfg["dataset_text_field"] = "text"
+if _maxlen_kw:
+    _cfg[_maxlen_kw] = max_seq
+
+training_args = _TrainCls(**_cfg)
+
+# If text_field / max_seq_length still live on SFTTrainer (older trl),
+# pass them there instead.
+_sft_sig = inspect.signature(SFTTrainer.__init__).parameters
+_extra = {{}}
+if not _txtfld_in_cfg and "dataset_text_field" in _sft_sig:
+    _extra["dataset_text_field"] = "text"
+if not _maxlen_kw and "max_seq_length" in _sft_sig:
+    _extra["max_seq_length"] = max_seq
 
 trainer = SFTTrainer(
     model=model,
@@ -326,6 +355,7 @@ trainer = SFTTrainer(
     eval_dataset=val_ds,
     tokenizer=tokenizer,
     peft_config=peft_cfg,
+    **_extra,
 )
 
 print(f"[SFT] Training {{len(train_texts)}} examples for {{EPOCHS}} epoch(s) ...")
