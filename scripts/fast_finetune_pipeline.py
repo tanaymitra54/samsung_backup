@@ -258,22 +258,23 @@ val_ds   = Dataset.from_dict({{"text": val_texts}}) if val_texts else None
 
 # ── Model & LoRA ──────────────────────────────────────────────────────────────
 use_cuda = torch.cuda.is_available()
+use_bf16 = use_cuda and torch.cuda.is_bf16_supported()
 use_4bit = use_cuda
 
 bnb_config = None
 if use_4bit:
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_compute_dtype=torch.bfloat16 if use_bf16 else torch.float16,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
     )
 
-print(f"[SFT] Loading {{model_name}} (4-bit={{use_4bit}}) ...")
+print(f"[SFT] Loading {{model_name}} (4-bit={{use_4bit}}, bf16={{use_bf16}}) ...")
 mkw = {{
     "cache_dir":   cache_dir,
     "device_map":  "auto" if use_cuda else None,
-    "torch_dtype": torch.float16 if use_cuda else torch.float32,
+    "torch_dtype": torch.bfloat16 if use_bf16 else (torch.float16 if use_cuda else torch.float32),
 }}
 if bnb_config:
     mkw["quantization_config"] = bnb_config
@@ -321,7 +322,8 @@ _cfg = {{
     "learning_rate": LR,
     "warmup_ratio": 0.05,
     "num_train_epochs": EPOCHS,
-    "fp16": use_cuda,
+    "bf16": use_bf16,
+    "fp16": use_cuda and not use_bf16,
     "logging_steps": 10,
     "save_steps": 200,
     "save_total_limit": 1,
