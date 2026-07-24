@@ -311,16 +311,25 @@ def load_arc(n: int) -> list:
 
 def load_logiqa(n: int) -> list:
     from datasets import load_dataset
+    # lucasmccabe/logiqa has a logiqa.py loading script that is no longer
+    # supported (and trust_remote_code is also banned in newer datasets versions).
+    # HuggingFace auto-generates parquet files for such datasets; we load
+    # directly from that parquet URL to get the same data with zero script deps.
+    _LOGIQA_PARQUET = (
+        "https://huggingface.co/datasets/lucasmccabe/logiqa"
+        "/resolve/refs%2Fconvert%2Fparquet/default/train/0.parquet"
+    )
     try:
-        ds = load_dataset("lucasmccabe/logiqa", split="train", streaming=True, trust_remote_code=True)
+        ds = load_dataset("parquet", data_files={"train": _LOGIQA_PARQUET},
+                          split="train", streaming=True)
         rows = []
         for row in ds:
             rows.append(row)
             if len(rows) >= max(n * 5, 500):
                 break
     except Exception as e:
-        print(f"[LogiQA] Streaming failed ({e}), trying standard load...")
-        ds = load_dataset("lucasmccabe/logiqa", split="train", trust_remote_code=True)
+        print(f"[LogiQA] Streaming parquet failed ({e}), trying direct parquet load...")
+        ds = load_dataset("parquet", data_files={"train": _LOGIQA_PARQUET}, split="train")
         rows = list(ds)
 
     random.seed(SEED)
