@@ -330,12 +330,8 @@ def load_logiqa(n: int) -> list:
     with urllib.request.urlopen(req, timeout=120) as resp:
         buf = io.BytesIO(resp.read())
     table = pq.read_table(buf)
-    # Convert to list of plain Python dicts (same interface as datasets rows)
-    cols = table.column_names
-    rows = [
-        {col: table.column(col)[i].as_py() for col in cols}
-        for i in range(table.num_rows)
-    ]
+    # Convert PyArrow table to list of row dicts matching HF datasets output
+    rows = table.to_pylist()
 
     random.seed(SEED)
     random.shuffle(rows)
