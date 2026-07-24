@@ -322,7 +322,7 @@ def load_logiqa(n: int) -> list:
 
     _LOGIQA_PARQUET = (
         "https://huggingface.co/datasets/lucasmccabe/logiqa"
-        "/resolve/refs%2Fconvert%2Fparquet/default/train/0.parquet"
+        "/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet"
     )
     print("[LogiQA] Fetching auto-parquet from HuggingFace via urllib...")
     req = urllib.request.Request(_LOGIQA_PARQUET,
