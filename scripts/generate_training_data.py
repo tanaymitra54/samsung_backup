@@ -196,7 +196,10 @@ def load_gsm8k(n: int) -> list:
 
 def load_strategyqa(n: int) -> list:
     from datasets import load_dataset
-    ds = load_dataset("wics/strategy-qa", split="train")
+    # wics/strategy-qa uses a loading script that is no longer supported by
+    # newer versions of the datasets library.  voidful/StrategyQA is a
+    # parquet-backed mirror of the same data and loads without scripts.
+    ds = load_dataset("voidful/StrategyQA", split="train")
     rows = list(ds)
     random.seed(SEED)
     random.shuffle(rows)
@@ -205,8 +208,8 @@ def load_strategyqa(n: int) -> list:
     for row in rows:
         gold_bool = row["answer"]  # True/False
         gold = "yes" if gold_bool else "no"
-        # Include facts as context in the prompt question
-        facts = row.get("facts", [])
+        # Include facts (or decomposition steps) as context in the prompt
+        facts = row.get("facts") or row.get("decomposition") or []
         if facts:
             facts_str = "\n".join(f"- {f}" for f in facts)
             prompt_q = f"{row['question']}\n\nContext:\n{facts_str}"
@@ -253,7 +256,9 @@ def load_arc(n: int) -> list:
 
 def load_logiqa(n: int) -> list:
     from datasets import load_dataset
-    ds = load_dataset("lucasmccabe/logiqa", split="train")
+    # lucasmccabe/logiqa uses a community loading script; trust_remote_code=True
+    # is required to allow it (was always needed for script-backed datasets).
+    ds = load_dataset("lucasmccabe/logiqa", split="train", trust_remote_code=True)
     rows = list(ds)
     random.seed(SEED)
     random.shuffle(rows)
