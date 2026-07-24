@@ -113,7 +113,7 @@ class BenchmarkRunner:
         return questions, answers
 
     def load_arc_challenge(self) -> tuple[list[str], list[str]]:
-        dataset = load_dataset("ai2_arc", "ARC-Challenge", split="test")
+        dataset = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")
         if not self.full_eval:
             dataset = dataset.select(range(min(self.subset_size, len(dataset))))
 
