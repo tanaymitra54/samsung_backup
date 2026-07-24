@@ -183,10 +183,10 @@ import yaml
 from datasets import Dataset
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer,
-    BitsAndBytesConfig, TrainingArguments,
+    BitsAndBytesConfig,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 TRAIN_FILE  = {repr(str(train_file))}
 VAL_FILE    = {repr(str(val_file))}
@@ -295,7 +295,10 @@ os.makedirs(ADAPTER_OUT, exist_ok=True)
 run_dir = str(Path(ADAPTER_OUT).parent)
 
 grad_accum = max(1, 8 // BATCH_SIZE)
-training_args = TrainingArguments(
+# SFTConfig inherits TrainingArguments; dataset_text_field and max_seq_length
+# were moved here from SFTTrainer in trl >= 0.8. eval_strategy replaces the
+# old evaluation_strategy name removed in transformers >= 4.46.
+training_args = SFTConfig(
     output_dir=run_dir,
     per_device_train_batch_size=BATCH_SIZE,
     gradient_accumulation_steps=grad_accum,
@@ -306,12 +309,14 @@ training_args = TrainingArguments(
     logging_steps=10,
     save_steps=200,
     save_total_limit=1,
-    evaluation_strategy="epoch" if val_ds else "no",
+    eval_strategy="epoch" if val_ds else "no",
     remove_unused_columns=False,
     report_to="none",
     run_name=RUN_NAME,
     dataloader_num_workers=0,
     optim="paged_adamw_8bit" if use_cuda else "adamw_torch",
+    dataset_text_field="text",
+    max_seq_length=max_seq,
 )
 
 trainer = SFTTrainer(
@@ -321,8 +326,6 @@ trainer = SFTTrainer(
     eval_dataset=val_ds,
     tokenizer=tokenizer,
     peft_config=peft_cfg,
-    max_seq_length=max_seq,
-    dataset_text_field="text",
 )
 
 print(f"[SFT] Training {{len(train_texts)}} examples for {{EPOCHS}} epoch(s) ...")
