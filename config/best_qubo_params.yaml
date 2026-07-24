@@ -1,0 +1,11 @@
+penalty_weight: 1.0
+diversity_bonus: 0.1
+cardinality_penalty: 0.05
+answer_agree_weight: 0.3
+answer_sim_weight: 0.7
+validation_accuracy: 0.7778
+notes: |
+  Derived from partial grid search (52/81 combos evaluated, pw=1.5 not yet tested).
+  All pw=1.0 combinations scored identically (7/9 correct on 10-question validation).
+  First pw=1.0 combo used as canonical best. The untested pw=1.5 range may score
+  equivalently or better, but pw=1.0 is a safe, well-supported choice.

@@ -177,7 +177,7 @@ class DiverseSampler:
                         temperature=temperature,
                         top_p=self.top_p,
                         do_sample=True,
-                        use_cache=False,
+                        use_cache=True,
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )

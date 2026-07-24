@@ -281,7 +281,7 @@ class InferencePipeline:
                         **inputs,
                         max_new_tokens=max_new_tokens,
                         do_sample=False,
-                        use_cache=False,
+                        use_cache=True,
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )
@@ -299,8 +299,6 @@ class InferencePipeline:
                     del inputs
                 if outputs is not None:
                     del outputs
-                torch.cuda.empty_cache()
-                gc.collect()
 
         return ""
 
@@ -341,7 +339,7 @@ class InferencePipeline:
                         **inputs,
                         max_new_tokens=self.max_new_tokens,
                         do_sample=False,
-                        use_cache=False,
+                        use_cache=True,
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )

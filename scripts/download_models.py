@@ -10,6 +10,7 @@ from huggingface_hub import snapshot_download
 
 DEFAULT_MODELS = [
     "Qwen/Qwen3.5-4B",
+    "Qwen/Qwen2.5-1.5B-Instruct",
     "meta-llama/Llama-3.2-3B-Instruct",
     "microsoft/Phi-4-mini-reasoning",
 ]
