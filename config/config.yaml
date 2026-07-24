@@ -16,11 +16,11 @@ model:
         gpu_memory_utilization: 0.9
 
 pipeline:
-    num_answers: 4
+    num_answers: 3        # 4 perturbations × 3 = 12 chains total, enough for QUBO
     num_reasons: 4
     subset_size: 6
-    max_new_tokens: 512
-    sampling_max_new_tokens: 512
+    max_new_tokens: 512   # keep for final answer generation
+    sampling_max_new_tokens: 256   # down from 512; 12 × 256 tokens ≈ 1s/question on H100
     temperature_range: [0.3, 0.9]
     top_p: 0.95
 

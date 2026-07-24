@@ -299,7 +299,7 @@ class DiverseSampler:
         Generate a diverse pool of (reason, answer) pairs for a single question.
 
         TOTAL SAMPLES GENERATED:
-            len(perturbations) × num_answers  (default: 4 × 4 = 16 candidates)
+            len(perturbations) × num_answers  (default: 4 × 3 = 12 candidates)
 
         Each sample is independently drawn at a random temperature drawn from
         [temperature_range[0], temperature_range[1]] (e.g., 0.3 to 0.9).
