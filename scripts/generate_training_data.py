@@ -14,7 +14,7 @@ Output:
     data/generation_stats.json       -- per-dataset statistics
 
 Hardware target: H100 80GB -- runs model in bfloat16, no 4-bit quantization.
-Expected runtime: ~4-6 hours for all 6000 examples at 20 chains/question.
+Expected runtime: ~4-6 hours for all 6000 examples.
 
 Usage:
     python scripts/generate_training_data.py [--config CONFIG] [--qubo-params PARAMS]
@@ -419,7 +419,7 @@ def run_qubo_pipeline(
         "top_score": 0.0,
     }
 
-    # 1. Sample chains (4 perturbations x 20 answers = 80 candidates on H100)
+    # 1. Sample chains using DiverseSampler (respects pipeline.num_answers from config.yaml)
     try:
         chains = sampler.sample(question, task_type=task_type)
     except Exception as e:
@@ -720,8 +720,6 @@ def main():
         shared_model=shared_model,
         shared_tokenizer=shared_tokenizer,
     )
-    # Override num_answers attribute post-init for H100 (20 answers per perturbation)
-    sampler.num_answers = 20
 
     verifier     = ReasonVerifier(config_path=tmp_config, device=device)
     qubo_builder = QUBOBuilder(config_path=tmp_config, device=device)
