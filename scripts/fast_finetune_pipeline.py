@@ -339,8 +339,8 @@ if _maxlen_kw:
 
 training_args = _TrainCls(**_cfg)
 
-# If text_field / max_seq_length still live on SFTTrainer (older trl),
-# pass them there instead.
+# If text_field / max_seq_length / tokenizer name vary by trl version,
+# inspect SFTTrainer signature dynamically.
 _sft_sig = inspect.signature(SFTTrainer.__init__).parameters
 _extra = {{}}
 if not _txtfld_in_cfg and "dataset_text_field" in _sft_sig:
@@ -348,13 +348,20 @@ if not _txtfld_in_cfg and "dataset_text_field" in _sft_sig:
 if not _maxlen_kw and "max_seq_length" in _sft_sig:
     _extra["max_seq_length"] = max_seq
 
+# trl >= 0.12 renamed 'tokenizer' to 'processing_class'
+if "processing_class" in _sft_sig:
+    _extra["processing_class"] = tokenizer
+elif "tokenizer" in _sft_sig:
+    _extra["tokenizer"] = tokenizer
+
+if "peft_config" in _sft_sig:
+    _extra["peft_config"] = peft_cfg
+
 trainer = SFTTrainer(
     model=model,
     args=training_args,
     train_dataset=train_ds,
     eval_dataset=val_ds,
-    tokenizer=tokenizer,
-    peft_config=peft_cfg,
     **_extra,
 )
 
