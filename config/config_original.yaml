@@ -1,5 +1,5 @@
 model:
-    name: "./cache/models/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+    name: "meta-llama/Llama-3.2-3B-Instruct"
     cache_dir: "./cache/models"
     candidates:
         - "Qwen/Qwen3.5-4B"

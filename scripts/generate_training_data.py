@@ -117,9 +117,8 @@ def load_config(config_path: str, qubo_params_path: str) -> dict:
     }
     config["qubo"].update(qubo_overrides)
 
-    # H100 settings: bfloat16, no 4-bit, 20 chains per question
+    # H100 settings: bfloat16, no 4-bit
     config["model"]["load_in_4bit"] = False
-    config["pipeline"]["num_answers"] = 20
     # Increase token budget for richer chains on H100
     config["pipeline"]["sampling_max_new_tokens"] = min(
         512, config["pipeline"].get("max_new_tokens", 512)
@@ -129,7 +128,6 @@ def load_config(config_path: str, qubo_params_path: str) -> dict:
     for k, v in qubo_overrides.items():
         print(f"  qubo.{k} = {v}")
     print(f"  model.load_in_4bit = False (bfloat16 on H100)")
-    print(f"  pipeline.num_answers = 20")
 
     return config
 
