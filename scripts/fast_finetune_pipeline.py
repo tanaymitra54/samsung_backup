@@ -318,6 +318,7 @@ _txtfld_in_cfg = "dataset_text_field" in _sig
 _cfg = {{
     "output_dir": run_dir,
     "per_device_train_batch_size": BATCH_SIZE,
+    "per_device_eval_batch_size": BATCH_SIZE,
     "gradient_accumulation_steps": grad_accum,
     "learning_rate": LR,
     "warmup_ratio": 0.05,
@@ -327,7 +328,7 @@ _cfg = {{
     "logging_steps": 10,
     "save_steps": 200,
     "save_total_limit": 1,
-    _eval_kw: "epoch" if val_ds else "no",
+    _eval_kw: "no",
     "remove_unused_columns": False,
     "report_to": "none",
     "run_name": RUN_NAME,
