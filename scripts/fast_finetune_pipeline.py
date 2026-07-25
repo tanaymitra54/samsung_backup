@@ -462,24 +462,35 @@ def _print_comparison(out_dir: Path):
         except Exception:
             return {}
 
-    base_data = _load(out_dir / "base")
-    ft_data   = _load(out_dir / "finetuned")
+    base_raw = _load(out_dir / "base")
+    ft_raw   = _load(out_dir / "finetuned")
 
-    print("\n" + "=" * 65)
-    print(f"  {'Benchmark':<18} | {'Base':>8} | {'Fine-tuned':>10} | {'Delta':>8}")
-    print("-" * 65)
+    base_data = base_raw.get("results", base_raw)
+    ft_data   = ft_raw.get("results", ft_raw)
 
-    for bm in sorted(set(base_data) | set(ft_data)):
-        if bm.startswith("_"):
-            continue
-        b_acc = (base_data.get(bm) or {}).get("qubo_accuracy") or (base_data.get(bm) or {}).get("accuracy")
-        f_acc = (ft_data.get(bm)   or {}).get("qubo_accuracy") or (ft_data.get(bm)   or {}).get("accuracy")
-        b_s   = f"{b_acc:.1%}" if b_acc is not None else "N/A"
-        f_s   = f"{f_acc:.1%}" if f_acc is not None else "N/A"
-        d_s   = f"{f_acc-b_acc:+.1%}" if (b_acc is not None and f_acc is not None) else "N/A"
-        print(f"  {bm:<18} | {b_s:>8} | {f_s:>10} | {d_s:>8}")
+    print("\n" + "=" * 75)
+    print(f"  {'Benchmark':<12} | {'Mode':<8} | {'Base':>8} | {'Fine-tuned':>10} | {'Delta':>8}")
+    print("-" * 75)
 
-    print("=" * 65)
+    all_bms = sorted(set(k for k in base_data if isinstance(base_data[k], dict)) | 
+                     set(k for k in ft_data if isinstance(ft_data[k], dict)))
+
+    for bm in all_bms:
+        b_item = base_data.get(bm, {})
+        f_item = ft_data.get(bm, {})
+        
+        b_accs = b_item.get("accuracy", {}) if isinstance(b_item, dict) else {}
+        f_accs = f_item.get("accuracy", {}) if isinstance(f_item, dict) else {}
+
+        for mode in ["greedy", "cot", "qubo"]:
+            b_val = b_accs.get(mode)
+            f_val = f_accs.get(mode)
+            b_s = f"{b_val:.2%}" if b_val is not None else "N/A"
+            f_s = f"{f_val:.2%}" if f_val is not None else "N/A"
+            d_s = f"{f_val - b_val:+.2%}" if (b_val is not None and f_val is not None) else "N/A"
+            print(f"  {bm:<12} | {mode:<8} | {b_s:>8} | {f_s:>10} | {d_s:>8}")
+
+    print("=" * 75)
     print(f"\nFull results saved to: {out_dir}")
 
 
