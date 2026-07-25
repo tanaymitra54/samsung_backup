@@ -49,6 +49,7 @@ from pipeline.sampling import DiverseSampler
 from pipeline.verifier import ReasonVerifier
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.solver import SimulatedAnnealingSolver
+from pipeline.device_utils import resolve_device
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 DATASET_CONFIGS = {
@@ -156,14 +157,14 @@ def load_model_bfloat16(config: dict, device: str) -> tuple:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    use_cuda = device.startswith("cuda")
+    target_device = resolve_device(device)
+    use_cuda = target_device.type == "cuda"
     if use_cuda:
-        device_index = 0 if device == "cuda" else int(device.split(":")[1])
+        device_index = target_device.index or 0
         torch.cuda.set_device(device_index)
         torch.cuda.reset_peak_memory_stats()
-        target_device = f"cuda:{device_index}"
     else:
-        target_device = "cpu"
+        target_device = torch.device("cpu")
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
