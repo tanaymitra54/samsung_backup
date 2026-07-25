@@ -648,7 +648,10 @@ def main():
         print(f"{'=' * 70}")
         print("[1/6] Loading inference model...")
         sys.stdout.flush()
-        inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
+        _adapter_path = os.environ.get("QUBO_ADAPTER_PATH") or None
+        if _adapter_path:
+            print(f"[Eval] LoRA adapter: {_adapter_path}")
+        inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm, adapter_path=_adapter_path)
         runtime_device = str(inference.device)
 
         print("[2/6] Loading sampler (sharing model)...")

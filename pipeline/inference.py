@@ -59,6 +59,7 @@ PHASE 2 TODO — SEPARATE FINAL-ANSWER MODEL:
 """
 
 import gc
+import os
 import yaml
 import torch
 import numpy as np
@@ -70,7 +71,7 @@ from pipeline.device_utils import candidate_cuda_devices, resolve_device
 
 
 class InferencePipeline:
-    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, use_vllm: bool | None = None):
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, use_vllm: bool | None = None, adapter_path: str | None = None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
@@ -87,6 +88,9 @@ class InferencePipeline:
 
         self.use_vllm = model_cfg.get("use_vllm", False) if use_vllm is None else use_vllm
 
+        # Resolve adapter path: explicit arg takes precedence, then env var
+        resolved_adapter = adapter_path or os.environ.get("QUBO_ADAPTER_PATH")
+
         if self.use_vllm:
             self.model = None
         else:
@@ -94,6 +98,22 @@ class InferencePipeline:
             self.model = self._load_model_with_fallbacks(model_cfg, load_in_4bit)
             if self.device.type == "cpu":
                 self.model = self.model.to(self.device)
+
+            # ── LoRA adapter (optional) ───────────────────────────────────────
+            if resolved_adapter:
+                print(f"[InferencePipeline] Loading LoRA adapter from: {resolved_adapter}")
+                try:
+                    from peft import PeftModel
+                    self.model = PeftModel.from_pretrained(
+                        self.model,
+                        resolved_adapter,
+                        is_trainable=False,
+                    )
+                    self.model = self.model.merge_and_unload()  # fuse weights for faster inference
+                    print("[InferencePipeline] Adapter merged and unloaded successfully.")
+                except Exception as e:
+                    print(f"[InferencePipeline] WARNING: Failed to load adapter ({e}). Falling back to base model.")
+
             self.model.eval()
             self.model.generation_config.do_sample = False
             self.model.generation_config.temperature = None
