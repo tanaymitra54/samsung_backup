@@ -1,0 +1,70 @@
+{
+  "gsm8k": {
+    "generated": 124,
+    "filtered": 0,
+    "final": 124,
+    "avg_score": 0.8545,
+    "min_score": 0.6397,
+    "max_score": 0.91,
+    "filter_reasons": {}
+  },
+  "strategyqa": {
+    "generated": 38,
+    "filtered": 0,
+    "final": 38,
+    "avg_score": 0.7702,
+    "min_score": 0.4256,
+    "max_score": 0.9302,
+    "filter_reasons": {}
+  },
+  "arc": {
+    "generated": 57,
+    "filtered": 0,
+    "final": 57,
+    "avg_score": 0.7954,
+    "min_score": 0.4105,
+    "max_score": 0.9832,
+    "filter_reasons": {}
+  },
+  "logiqa": {
+    "generated": 40,
+    "filtered": 17,
+    "final": 23,
+    "avg_score": 0.7632,
+    "min_score": 0.4424,
+    "max_score": 0.9434,
+    "filter_reasons": {
+      "low_score:0.143": 1,
+      "low_score:0.246": 1,
+      "low_score:0.202": 1,
+      "low_score:0.326": 1,
+      "low_score:0.290": 1,
+      "low_score:0.124": 1,
+      "low_score:0.376": 1,
+      "low_score:0.213": 1,
+      "low_score:0.223": 1,
+      "low_score:0.152": 1,
+      "low_score:0.353": 1,
+      "low_score:0.315": 1,
+      "low_score:0.126": 1,
+      "low_score:0.245": 1,
+      "low_score:0.276": 1,
+      "low_score:0.342": 1,
+      "low_score:0.150": 1
+    }
+  },
+  "openorca": {
+    "generated": 200,
+    "filtered": 0,
+    "final": 200,
+    "avg_score": null,
+    "min_score": null,
+    "max_score": null,
+    "filter_reasons": {}
+  },
+  "split": {
+    "train": 389,
+    "val": 46,
+    "total": 435
+  }
+}
