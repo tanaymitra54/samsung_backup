@@ -58,15 +58,15 @@ DATASET_CONFIGS = {
         "split": "train",
         "n": 2000,
         "task_type": "math",
-        "target_frac": 0.33,
+        "target_frac": 0.40,
     },
-    "strategyqa": {
-        "hf_path": "wics/strategy-qa",
-        "hf_name": None,
-        "split": "train",
+    "mmlu": {
+        "hf_path": "cais/mmlu",
+        "hf_name": "all",
+        "split": "test",
         "n": 800,
         "task_type": "commonsense",
-        "target_frac": 0.13,
+        "target_frac": 0.25,
     },
     "arc": {
         "hf_path": "allenai/ai2_arc",
@@ -74,7 +74,15 @@ DATASET_CONFIGS = {
         "split": "train",
         "n": 800,
         "task_type": "commonsense",
-        "target_frac": 0.13,
+        "target_frac": 0.15,
+    },
+    "strategyqa": {
+        "hf_path": "wics/strategy-qa",
+        "hf_name": None,
+        "split": "train",
+        "n": 800,
+        "task_type": "commonsense",
+        "target_frac": 0.12,
     },
     "logiqa": {
         "hf_path": "lucasmccabe/logiqa",
@@ -82,15 +90,15 @@ DATASET_CONFIGS = {
         "split": "train",
         "n": 600,
         "task_type": "commonsense",
-        "target_frac": 0.10,
+        "target_frac": 0.08,
     },
 }
 
 OPENORCA_CONFIG = {
     "hf_path": "Open-Orca/OpenOrca",
     "split": "train",
-    "n": 1800,
-    "target_frac": 0.30,
+    "n": 0,          # Disabled: irrelevant NLP annotation tasks hurt reasoning SFT
+    "target_frac": 0.0,
 }
 
 TOTAL_TARGET = 6000
@@ -309,6 +317,52 @@ def load_arc(n: int) -> list:
     return out
 
 
+def load_mmlu(n: int) -> list:
+    """Load MMLU questions (MCQ format, same structure as ARC)."""
+    from datasets import load_dataset
+    try:
+        ds = load_dataset("cais/mmlu", "all", split="test", streaming=True)
+        rows = []
+        for row in ds:
+            rows.append(row)
+            if len(rows) >= max(n * 5, 500):
+                break
+    except Exception as e:
+        print(f"[MMLU] Streaming failed ({e}), trying standard load...")
+        try:
+            ds = load_dataset("cais/mmlu", "all", split="test")
+            rows = list(ds)
+        except Exception as e2:
+            print(f"[MMLU] Standard load also failed ({e2}). Skipping MMLU.")
+            return []
+
+    random.seed(SEED)
+    random.shuffle(rows)
+    rows = rows[:n]
+    letters = ["A", "B", "C", "D"]
+    out = []
+    for row in rows:
+        choices = row.get("choices", [])
+        answer_idx = row.get("answer", 0)   # 0-indexed int
+        if not choices or answer_idx >= len(choices):
+            continue
+        gold = letters[answer_idx]
+        options_str = "  ".join(f"{letters[i]}) {c}" for i, c in enumerate(choices) if i < 4)
+        subject = row.get("subject", "")
+        subject_str = f" ({subject.replace('_', ' ')})" if subject else ""
+        prompt_q = f"{row['question']}{subject_str}\n\nOptions: {options_str}"
+        out.append({
+            "question": row["question"],
+            "gold": gold,
+            "task_type": "commonsense",
+            "source": "mmlu",
+            "prompt_question": prompt_q,
+            "options_str": options_str,
+        })
+    print(f"[MMLU] Loaded {len(out)} questions")
+    return out
+
+
 def load_logiqa(n: int) -> list:
     # lucasmccabe/logiqa ships a logiqa.py loading script that is fully banned
     # in newer datasets versions, and trust_remote_code is also rejected.
@@ -425,6 +479,8 @@ def make_finetuning_example(item: dict, chain: dict) -> dict:
             "correctness_score": round(correctness, 4),
             "consensus_score": round(consensus, 4),
             "qubo_selected": True,
+            "greedy_would_have_failed": item.get("greedy_would_have_failed", False),
+            "full_chains_pool": item.get("full_chains_pool", []),
         },
     }
 
@@ -564,11 +620,20 @@ def run_qubo_pipeline(
     stats["n_chains_selected"] = len(selected_chains)
     stats["top_score"] = top_score
 
-    # 7. Quality filter: score threshold
-    if top_score < 0.4:
+    # 7. Quality filter: score threshold >= 0.5
+    if top_score < 0.5:
         stats["filtered"] = True
         stats["filter_reason"] = f"low_score:{top_score:.3f}"
         return [], stats
+
+    best_pre_qubo = max(chains, key=lambda c: c.get("correctness_score", 0.0))
+    best_pre_qubo_score = best_pre_qubo.get("correctness_score", 0.0)
+    best_pre_qubo_answer = best_pre_qubo.get("answer", "").strip()
+    
+    final_answer = selected_chains[0].get("answer", "").strip()
+    greedy_would_have_failed = (best_pre_qubo_score < 0.5) or (best_pre_qubo_answer != final_answer)
+    stats["greedy_would_have_failed"] = greedy_would_have_failed
+    stats["full_chains_pool"] = chains
 
     # 7b. Math tasks: top chain answer must match gold
     if task_type == "math":
@@ -620,6 +685,7 @@ def process_dataset(
         "filtered": 0,
         "scores": [ex["metadata"]["correctness_score"] for ex in examples],
         "filter_reasons": {},
+        "greedy_failed_count": sum(1 for ex in examples if ex["metadata"].get("greedy_would_have_failed", False)),
     }
 
     if not items_to_process:
@@ -643,10 +709,16 @@ def process_dataset(
                 agg_stats["filter_reasons"][reason] = agg_stats["filter_reasons"].get(reason, 0) + 1
                 continue
 
+            # Inject new stats into the item so make_finetuning_example can read it
+            item["greedy_would_have_failed"] = stats.get("greedy_would_have_failed", False)
+            item["full_chains_pool"] = stats.get("full_chains_pool", [])
+
             # Use the best selected chain (already ranked by correctness_score)
             ex = make_finetuning_example(item, selected_chains[0])
             examples.append(ex)
             agg_stats["scores"].append(stats["top_score"])
+            if stats.get("greedy_would_have_failed", False):
+                agg_stats["greedy_failed_count"] += 1
 
             cache_f.write(json.dumps(ex, ensure_ascii=False) + "\n")
             cache_f.flush()
@@ -738,17 +810,20 @@ def print_summary_table(all_stats: dict, final_train: list, final_val: list):
 
     total_gen = 0
     total_filt = 0
+    total_greedy_failed = 0
     scores_all = []
 
     for name, s in all_stats.items():
         gen = s.get("generated", 0)
         filt = s.get("filtered", 0)
+        greedy_failed = s.get("greedy_failed_count", 0)
         final_n = gen - filt
         scores = s.get("scores", [])
         avg_score = f"{sum(scores)/len(scores):.3f}" if scores else "N/A"
         print(f"{name:<15} | {gen:>9} | {filt:>8} | {final_n:>6} | {avg_score:>9}")
         total_gen += gen
         total_filt += filt
+        total_greedy_failed += greedy_failed
         scores_all.extend(scores)
 
     avg_all = f"{sum(scores_all)/len(scores_all):.3f}" if scores_all else "N/A"
@@ -757,6 +832,10 @@ def print_summary_table(all_stats: dict, final_train: list, final_val: list):
     print("=" * 65)
     print(f"\nFinal training set : {len(final_train)} examples")
     print(f"Final validation set: {len(final_val)} examples")
+    
+    total_final = len(final_train) + len(final_val)
+    if total_final > 0:
+        print(f"Fraction where Greedy would have failed: {total_greedy_failed / total_final:.2%} ({total_greedy_failed}/{total_final})")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -771,18 +850,19 @@ def main():
     # ── Fast-run size overrides ───────────────────────────────────────────────
     parser.add_argument("--quick",       action="store_true",
                         help="Use reduced dataset sizes for a fast run "
-                             "(gsm8k=100, arc=60, logiqa=40, strategyqa=40, openorca=200). "
+                             "(gsm8k=300, mmlu=200, arc=150, logiqa=100, strategyqa=100, openorca=0). "
                              "Individual --n-* flags override this.")
-    parser.add_argument("--n-gsm8k",       type=int, default=None, help="# GSM8K questions  (default: 2000)")
-    parser.add_argument("--n-arc",         type=int, default=None, help="# ARC-Challenge questions (default: 800)")
-    parser.add_argument("--n-logiqa",      type=int, default=None, help="# LogiQA questions  (default: 600)")
-    parser.add_argument("--n-strategyqa",  type=int, default=None, help="# StrategyQA questions (default: 800)")
-    parser.add_argument("--n-openorca",    type=int, default=None, help="# OpenOrca examples  (default: 1800)")
+    parser.add_argument("--n-gsm8k",       type=int, default=1000, help="# GSM8K questions  (default: 1000)")
+    parser.add_argument("--n-mmlu",        type=int, default=0, help="# MMLU questions (default: 0)")
+    parser.add_argument("--n-arc",         type=int, default=400, help="# ARC-Challenge questions (default: 400)")
+    parser.add_argument("--n-logiqa",      type=int, default=300, help="# LogiQA questions  (default: 300)")
+    parser.add_argument("--n-strategyqa",  type=int, default=400, help="# StrategyQA questions (default: 400)")
+    parser.add_argument("--n-openorca",    type=int, default=0, help="# OpenOrca examples  (default: 0, disabled)")
     args = parser.parse_args()
 
     # ── Apply --quick defaults, then let explicit --n-* override ─────────────
     QUICK_DEFAULTS = {
-        "gsm8k": 100, "arc": 60, "logiqa": 40, "strategyqa": 40, "openorca": 200
+        "gsm8k": 300, "mmlu": 200, "arc": 150, "logiqa": 100, "strategyqa": 100, "openorca": 0
     }
     if args.quick:
         for ds, val in QUICK_DEFAULTS.items():
@@ -793,7 +873,7 @@ def main():
             print(f"  {ds}: {getattr(args, f'n_{ds}')}")
 
     # Apply overrides to DATASET_CONFIGS and OPENORCA_CONFIG in-place
-    _ds_map = {"gsm8k": "gsm8k", "arc": "arc", "logiqa": "logiqa", "strategyqa": "strategyqa"}
+    _ds_map = {"gsm8k": "gsm8k", "mmlu": "mmlu", "arc": "arc", "logiqa": "logiqa", "strategyqa": "strategyqa"}
     for arg_name, cfg_key in _ds_map.items():
         override_n = getattr(args, f"n_{arg_name}", None)
         if override_n is not None:
@@ -846,8 +926,9 @@ def main():
 
     dataset_loaders = {
         "gsm8k":      lambda: load_gsm8k(DATASET_CONFIGS["gsm8k"]["n"]),
-        "strategyqa": lambda: load_strategyqa(DATASET_CONFIGS["strategyqa"]["n"]),
+        "mmlu":       lambda: load_mmlu(DATASET_CONFIGS["mmlu"]["n"]),
         "arc":        lambda: load_arc(DATASET_CONFIGS["arc"]["n"]),
+        "strategyqa": lambda: load_strategyqa(DATASET_CONFIGS["strategyqa"]["n"]),
         "logiqa":     lambda: load_logiqa(DATASET_CONFIGS["logiqa"]["n"]),
     }
 
@@ -890,41 +971,41 @@ def main():
         if stats.get("filter_reasons"):
             print(f"  Filter breakdown: {stats['filter_reasons']}")
 
-    # ── Process OpenOrca (dataset 5, no QUBO) ────────────────────────────────
-    print(f"\n{'='*55}")
-    print(" Processing: OPENORCA (regularization, no QUBO)")
-    print(f"{'='*55}")
-    orca_cache = cache_dir / "openorca_raw.jsonl"
-
-    if args.resume and orca_cache.exists():
-        with open(orca_cache, encoding="utf-8") as f:
-            orca_examples = [json.loads(l) for l in f if l.strip()]
-        print(f"[OpenOrca] Loaded {len(orca_examples)} examples from cache")
+    # ── Process OpenOrca (disabled by default — hurts reasoning SFT) ─────────
+    if OPENORCA_CONFIG["n"] > 0:
+        print(f"\n{'='*55}")
+        print(" Processing: OPENORCA (regularization, no QUBO)")
+        print(f"{'='*55}")
+        orca_cache = cache_dir / "openorca_raw.jsonl"
+        if args.resume and orca_cache.exists():
+            with open(orca_cache, encoding="utf-8") as f:
+                orca_examples = [json.loads(l) for l in f if l.strip()]
+            print(f"[OpenOrca] Loaded {len(orca_examples)} examples from cache")
+        else:
+            orca_items = load_openorca(OPENORCA_CONFIG["n"])
+            orca_examples = [make_openorca_example(item) for item in orca_items]
+            with open(orca_cache, "w", encoding="utf-8") as f:
+                for ex in orca_examples:
+                    f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+            print(f"[OpenOrca] Saved {len(orca_examples)} examples to cache")
+        all_examples["openorca"] = orca_examples
+        all_stats["openorca"] = {
+            "generated": len(orca_examples), "filtered": 0, "scores": [], "filter_reasons": {}
+        }
     else:
-        orca_items = load_openorca(OPENORCA_CONFIG["n"])
-        orca_examples = [make_openorca_example(item) for item in orca_items]
-        with open(orca_cache, "w", encoding="utf-8") as f:
-            for ex in orca_examples:
-                f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-        print(f"[OpenOrca] Saved {len(orca_examples)} examples to cache")
-
-    all_examples["openorca"] = orca_examples
-    all_stats["openorca"] = {
-        "generated": len(orca_examples),
-        "filtered": 0,
-        "scores": [],
-        "filter_reasons": {},
-    }
+        print("\n[OpenOrca] Skipped (n=0 — disabled for reasoning-focused SFT).")
 
     # ── Stratified sampling ───────────────────────────────────────────────────
     print(f"\n[Sampling] Applying stratified sampling (target: {TOTAL_TARGET} total) ...")
-    target_fracs = {
-        "gsm8k":      DATASET_CONFIGS["gsm8k"]["target_frac"],
-        "strategyqa": DATASET_CONFIGS["strategyqa"]["target_frac"],
-        "arc":        DATASET_CONFIGS["arc"]["target_frac"],
-        "logiqa":     DATASET_CONFIGS["logiqa"]["target_frac"],
-        "openorca":   OPENORCA_CONFIG["target_frac"],
-    }
+    # Build target_fracs dynamically — only include datasets that have data
+    target_fracs = {ds: cfg["target_frac"] for ds, cfg in DATASET_CONFIGS.items()
+                    if all_examples.get(ds)}
+    if all_examples.get("openorca"):
+        target_fracs["openorca"] = OPENORCA_CONFIG["target_frac"]
+    # Re-normalise so fracs sum to 1.0
+    total_frac = sum(target_fracs.values())
+    if total_frac > 0:
+        target_fracs = {k: v / total_frac for k, v in target_fracs.items()}
     final_pool = stratified_sample(all_examples, TOTAL_TARGET, target_fracs)
 
     # ── Stratified train/val split ────────────────────────────────────────────

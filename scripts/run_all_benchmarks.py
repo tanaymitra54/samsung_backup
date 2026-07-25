@@ -55,7 +55,10 @@ def parse_args():
         "--full", action="store_true", help="Run on full datasets (ignore subset_size)"
     )
     parser.add_argument(
-        "--output-dir", default="outputs", help="Directory for output files"
+        "--output-dir", default="results/eval", help="Directory for output files"
+    )
+    parser.add_argument(
+        "--condition-label", default="base", help="Condition label for JSONL output (e.g. A, B, base)"
     )
     parser.add_argument(
         "--benchmarks",
@@ -706,6 +709,8 @@ def main():
         writer.writeheader()
 
         for b in benchmark_list:
+            jsonl_path = os.path.join(args.output_dir, f"{args.condition_label}_{b}_results.jsonl")
+            jsonl_file = open(jsonl_path, "w", encoding="utf-8")
             print(f"\n{'=' * 60}")
             print(f"Benchmark: {b}")
             print(f"{'=' * 60}")
@@ -810,6 +815,24 @@ def main():
                                 "error": "",
                             }
                             writer.writerow(row)
+                            
+                            jsonl_row = {
+                                "id": i + j,
+                                "question": q,
+                                "gold": gold,
+                                "pred_greedy_raw": preds_g[j],
+                                "pred_cot_raw": preds_c[j],
+                                "pred_qubo_raw": pred_qubo,
+                                "pred_greedy": pred_g_n,
+                                "pred_cot": pred_c_n,
+                                "pred_qubo": pred_q_n,
+                                "correct_greedy": c_g,
+                                "correct_cot": c_c,
+                                "correct_qubo": c_q,
+                            }
+                            jsonl_file.write(json.dumps(jsonl_row, ensure_ascii=False) + "\n")
+                            jsonl_file.flush()
+
                             all_rows.append(row)
                             if len(all_rows) <= 3:
                                 print(
@@ -914,6 +937,24 @@ def main():
                             "error": "",
                         }
                         writer.writerow(row)
+                        
+                        jsonl_row = {
+                            "id": idx,
+                            "question": q,
+                            "gold": gold,
+                            "pred_greedy_raw": pred_greedy,
+                            "pred_cot_raw": pred_cot,
+                            "pred_qubo_raw": pred_qubo,
+                            "pred_greedy": pred_g_n,
+                            "pred_cot": pred_c_n,
+                            "pred_qubo": pred_q_n,
+                            "correct_greedy": c_g,
+                            "correct_cot": c_c,
+                            "correct_qubo": c_q,
+                        }
+                        jsonl_file.write(json.dumps(jsonl_row, ensure_ascii=False) + "\n")
+                        jsonl_file.flush()
+
                         all_rows.append(row)
                         if len(all_rows) <= 3:
                             print(
@@ -956,6 +997,7 @@ def main():
             print(
                 f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%} | samples={total} failed={failed}"
             )
+            jsonl_file.close()
 
             if args.wandb_project:
                 try:
