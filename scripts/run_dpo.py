@@ -7,6 +7,14 @@ from pathlib import Path
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+# Monkey-patch FSDPModule for compatibility with newer PyTorch / trl versions
+try:
+    from torch.distributed.fsdp import FSDPModule
+except ImportError:
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDPModule
+    import torch.distributed.fsdp
+    torch.distributed.fsdp.FSDPModule = FSDPModule
+
 from trl import DPOTrainer, DPOConfig
 
 def main():
