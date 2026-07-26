@@ -97,33 +97,55 @@ def main():
 
     grad_accum = max(1, 4 // args.batch_size)
 
-    dpo_args = DPOConfig(
-        output_dir=args.output_dir,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=grad_accum,
-        learning_rate=args.lr,
-        num_train_epochs=args.epochs,
-        beta=args.beta,
-        bf16=use_bf16,
-        fp16=use_cuda and not use_bf16,
-        logging_steps=10,
-        save_strategy="epoch",
-        remove_unused_columns=False,
-        report_to="none",
-        optim="paged_adamw_8bit" if use_cuda else "adamw_torch",
-        max_prompt_length=max_seq // 2,
-        max_length=max_seq,
-    )
+    import inspect
+    dpo_config_params = set(inspect.signature(DPOConfig.__init__).parameters.keys())
+    
+    kwargs_config = {
+        "output_dir": args.output_dir,
+        "per_device_train_batch_size": args.batch_size,
+        "gradient_accumulation_steps": grad_accum,
+        "learning_rate": args.lr,
+        "num_train_epochs": args.epochs,
+        "beta": args.beta,
+        "bf16": use_bf16,
+        "fp16": use_cuda and not use_bf16,
+        "logging_steps": 10,
+        "save_strategy": "epoch",
+        "remove_unused_columns": False,
+        "report_to": "none",
+        "optim": "paged_adamw_8bit" if use_cuda else "adamw_torch",
+    }
 
-    trainer = DPOTrainer(
-        model=model,
-        ref_model=None, # DPOTrainer will create reference automatically with PEFT
-        args=dpo_args,
-        beta=args.beta,
-        train_dataset=train_ds,
-        tokenizer=tokenizer,
-        peft_config=peft_config,
-    )
+    if "max_prompt_length" in dpo_config_params:
+        kwargs_config["max_prompt_length"] = max_seq // 2
+    if "max_length" in dpo_config_params:
+        kwargs_config["max_length"] = max_seq
+    if "max_completion_length" in dpo_config_params:
+        kwargs_config["max_completion_length"] = max_seq // 2
+
+    dpo_args = DPOConfig(**kwargs_config)
+
+    trainer_kwargs = {
+        "model": model,
+        "ref_model": None,
+        "args": dpo_args,
+        "train_dataset": train_ds,
+        "peft_config": peft_config,
+    }
+
+    dpo_trainer_params = set(inspect.signature(DPOTrainer.__init__).parameters.keys())
+    if "beta" in dpo_trainer_params:
+        trainer_kwargs["beta"] = args.beta
+    if "processing_class" in dpo_trainer_params:
+        trainer_kwargs["processing_class"] = tokenizer
+    if "tokenizer" in dpo_trainer_params:
+        trainer_kwargs["tokenizer"] = tokenizer
+    if "max_prompt_length" in dpo_trainer_params:
+        trainer_kwargs["max_prompt_length"] = max_seq // 2
+    if "max_length" in dpo_trainer_params:
+        trainer_kwargs["max_length"] = max_seq
+
+    trainer = DPOTrainer(**trainer_kwargs)
 
     print(f"[DPO] Starting training for {args.epochs} epochs...")
     trainer.train()
