@@ -287,7 +287,7 @@ train_ds = Dataset.from_dict({{"text": train_texts}})
 val_ds   = Dataset.from_dict({{"text": val_texts}}) if val_texts else None
 
 # Keep original raw validation data for accuracy evaluation
-val_raw_gsm8k = [r for r in val_raw if r.get("metadata", {}).get("source") == "gsm8k"]
+val_raw_gsm8k = [r for r in val_raw if r.get("metadata", {{}}).get("source") == "gsm8k"]
 if not val_raw_gsm8k:
     val_raw_gsm8k = val_raw # Fallback if no gsm8k specifically
 val_raw_eval = val_raw_gsm8k[:40] # max 40 for speed
@@ -422,7 +422,7 @@ class CustomAccTrainer(SFTTrainer):
                 )
             gen_text = self.gen_tokenizer.decode(out_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
             
-            gold = str(item.get("metadata", {}).get("gold", "")).strip()
+            gold = str(item.get("metadata", {{}}).get("gold", "")).strip()
             # Extract number from gen_text
             gen_text = gen_text.replace(",", "")
             nums = re.findall(r"-?\d+(?:\.\d+)?", gen_text)
@@ -437,12 +437,12 @@ class CustomAccTrainer(SFTTrainer):
                 correct += 1
                 
         acc = correct / total if total > 0 else 0.0
-        metrics[f"{metric_key_prefix}_gsm8k_accuracy"] = acc
+        metrics[f"{{metric_key_prefix}}_gsm8k_accuracy"] = acc
         self.epoch_accuracies.append(acc)
-        print(f"[Eval] Epoch GSM8K Accuracy: {acc:.2%} ({correct}/{total})\\n")
+        print(f"[Eval] Epoch GSM8K Accuracy: {{acc:.2%}} ({{correct}}/{{total}})\\n")
         return metrics
 
-print(f"[SFT] Training {len(train_texts)} examples for {EPOCHS} epoch(s) | rank={LORA_RANK} alpha={LORA_ALPHA} lr={LR} ...")
+print(f"[SFT] Training {{len(train_texts)}} examples for {EPOCHS} epoch(s) | rank={LORA_RANK} alpha={LORA_ALPHA} lr={LR} ...")
 trainer = CustomAccTrainer(
     model=model,
     args=training_args,
