@@ -425,7 +425,7 @@ class CustomAccTrainer(SFTTrainer):
             gold = str(item.get("metadata", {{}}).get("gold", "")).strip()
             # Extract number from gen_text
             gen_text = gen_text.replace(",", "")
-            nums = re.findall(r"-?\d+(?:\.\d+)?", gen_text)
+            nums = re.findall("-?\\\\d+(?:\\\\.\\\\d+)?", gen_text)
             pred_num = float(nums[-1]) if nums else None
             
             try:
@@ -442,7 +442,7 @@ class CustomAccTrainer(SFTTrainer):
         print(f"[Eval] Epoch GSM8K Accuracy: {{acc:.2%}} ({{correct}}/{{total}})\\n")
         return metrics
 
-print(f"[SFT] Training {{len(train_texts)}} examples for {EPOCHS} epoch(s) | rank={LORA_RANK} alpha={LORA_ALPHA} lr={LR} ...")
+print(f"[SFT] Training {{len(train_texts)}} examples for {{EPOCHS}} epoch(s) | rank={{LORA_RANK}} alpha={{LORA_ALPHA}} lr={{LR}} ...")
 trainer = CustomAccTrainer(
     model=model,
     args=training_args,
