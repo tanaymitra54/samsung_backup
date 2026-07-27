@@ -732,52 +732,91 @@ def main():
             task_type = TASK_TYPE.get(b, "math")
             print(f"  ✓ Loaded {len(questions)} questions")
 
-            # Check if completed cached results exist for this benchmark & condition
+            # Check if completed or partial cached results exist for this benchmark & condition
+            cached_rows = []
             if os.path.exists(jsonl_path):
                 try:
                     with open(jsonl_path, "r", encoding="utf-8") as f_check:
                         cached_rows = [json.loads(line) for line in f_check if line.strip()]
-                    if len(cached_rows) >= len(questions) and len(questions) > 0:
-                        cached_rows = cached_rows[:len(questions)]
-                        c_g = sum(r.get("correct_greedy", 0) for r in cached_rows)
-                        c_c = sum(r.get("correct_cot", 0) for r in cached_rows)
-                        c_q = sum(r.get("correct_qubo", 0) for r in cached_rows)
-                        tot = len(cached_rows)
-                        acc_greedy = c_g / tot if tot else 0.0
-                        acc_cot = c_c / tot if tot else 0.0
-                        acc_qubo = c_q / tot if tot else 0.0
-                        summary[b] = {
-                            "accuracy": {"greedy": acc_greedy, "cot": acc_cot, "qubo": acc_qubo},
-                            "num_samples": tot,
-                            "failed_samples": 0,
-                            "abs_gain_vs_greedy": acc_qubo - acc_greedy,
-                            "cot_gain_over_greedy": acc_cot - acc_greedy,
-                        }
-                        print(f"  [Cache] Found {tot} completed results in {jsonl_path}. Skipping generation.")
-                        print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
-                        for idx, r in enumerate(cached_rows):
-                            csv_row = {
-                                "benchmark": b,
-                                "id": idx,
-                                "question": r.get("question", ""),
-                                "gold": r.get("gold", ""),
-                                "pred_greedy": r.get("pred_greedy", ""),
-                                "pred_cot": r.get("pred_cot", ""),
-                                "pred_qubo": r.get("pred_qubo", ""),
-                                "correct_greedy": r.get("correct_greedy", 0),
-                                "correct_cot": r.get("correct_cot", 0),
-                                "correct_qubo": r.get("correct_qubo", 0),
-                                "runtime_greedy_s": 0.0,
-                                "runtime_cot_s": 0.0,
-                                "runtime_qubo_s": 0.0,
-                                "error": "",
-                            }
-                            writer.writerow(csv_row)
-                        continue
                 except Exception as cache_err:
-                    print(f"  ⚠️ Could not read cache {jsonl_path}: {cache_err}. Re-running...")
+                    print(f"  ⚠️ Could not read cache {jsonl_path}: {cache_err}. Starting fresh...")
+                    cached_rows = []
 
-            jsonl_file = open(jsonl_path, "w", encoding="utf-8")
+            if len(cached_rows) >= len(questions) and len(questions) > 0:
+                cached_rows = cached_rows[:len(questions)]
+                c_g = sum(r.get("correct_greedy", 0) for r in cached_rows)
+                c_c = sum(r.get("correct_cot", 0) for r in cached_rows)
+                c_q = sum(r.get("correct_qubo", 0) for r in cached_rows)
+                tot = len(cached_rows)
+                acc_greedy = c_g / tot if tot else 0.0
+                acc_cot = c_c / tot if tot else 0.0
+                acc_qubo = c_q / tot if tot else 0.0
+                summary[b] = {
+                    "accuracy": {"greedy": acc_greedy, "cot": acc_cot, "qubo": acc_qubo},
+                    "num_samples": tot,
+                    "failed_samples": 0,
+                    "abs_gain_vs_greedy": acc_qubo - acc_greedy,
+                    "cot_gain_over_greedy": acc_cot - acc_greedy,
+                }
+                print(f"  [Cache] Found {tot}/{len(questions)} completed results in {jsonl_path}. Skipping generation.")
+                print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
+                for idx, r in enumerate(cached_rows):
+                    csv_row = {
+                        "benchmark": b,
+                        "id": idx,
+                        "question": r.get("question", ""),
+                        "gold": r.get("gold", ""),
+                        "pred_greedy": r.get("pred_greedy", ""),
+                        "pred_cot": r.get("pred_cot", ""),
+                        "pred_qubo": r.get("pred_qubo", ""),
+                        "correct_greedy": r.get("correct_greedy", 0),
+                        "correct_cot": r.get("correct_cot", 0),
+                        "correct_qubo": r.get("correct_qubo", 0),
+                        "runtime_greedy_s": 0.0,
+                        "runtime_cot_s": 0.0,
+                        "runtime_qubo_s": 0.0,
+                        "error": "",
+                    }
+                    writer.writerow(csv_row)
+                continue
+
+            num_cached = len(cached_rows)
+            if num_cached > 0:
+                print(f"  [Cache] Resuming {b} from question {num_cached + 1}/{len(questions)} ({num_cached} cached).")
+                correct_greedy = sum(r.get("correct_greedy", 0) for r in cached_rows)
+                correct_cot = sum(r.get("correct_cot", 0) for r in cached_rows)
+                correct_qubo = sum(r.get("correct_qubo", 0) for r in cached_rows)
+                total = num_cached
+                failed = 0
+                for idx, r in enumerate(cached_rows):
+                    csv_row = {
+                        "benchmark": b,
+                        "id": idx,
+                        "question": r.get("question", ""),
+                        "gold": r.get("gold", ""),
+                        "pred_greedy": r.get("pred_greedy", ""),
+                        "pred_cot": r.get("pred_cot", ""),
+                        "pred_qubo": r.get("pred_qubo", ""),
+                        "correct_greedy": r.get("correct_greedy", 0),
+                        "correct_cot": r.get("correct_cot", 0),
+                        "correct_qubo": r.get("correct_qubo", 0),
+                        "runtime_greedy_s": 0.0,
+                        "runtime_cot_s": 0.0,
+                        "runtime_qubo_s": 0.0,
+                        "error": "",
+                    }
+                    writer.writerow(csv_row)
+                questions = questions[num_cached:]
+                gold_answers = gold_answers[num_cached:]
+                jsonl_file = open(jsonl_path, "a", encoding="utf-8")
+            else:
+                correct_greedy = 0
+                correct_cot = 0
+                correct_qubo = 0
+                total = 0
+                failed = 0
+                jsonl_file = open(jsonl_path, "w", encoding="utf-8")
+
             print(f"  [STAGE 2/5] Starting evaluation...")
             sys.stdout.flush()
             correct_greedy = 0
