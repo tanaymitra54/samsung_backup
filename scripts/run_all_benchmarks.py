@@ -710,7 +710,6 @@ def main():
 
         for b in benchmark_list:
             jsonl_path = os.path.join(args.output_dir, f"{args.condition_label}_{b}_results.jsonl")
-            jsonl_file = open(jsonl_path, "w", encoding="utf-8")
             print(f"\n{'=' * 60}")
             print(f"Benchmark: {b}")
             print(f"{'=' * 60}")
@@ -732,6 +731,53 @@ def main():
 
             task_type = TASK_TYPE.get(b, "math")
             print(f"  ✓ Loaded {len(questions)} questions")
+
+            # Check if completed cached results exist for this benchmark & condition
+            if os.path.exists(jsonl_path):
+                try:
+                    with open(jsonl_path, "r", encoding="utf-8") as f_check:
+                        cached_rows = [json.loads(line) for line in f_check if line.strip()]
+                    if len(cached_rows) >= len(questions) and len(questions) > 0:
+                        cached_rows = cached_rows[:len(questions)]
+                        c_g = sum(r.get("correct_greedy", 0) for r in cached_rows)
+                        c_c = sum(r.get("correct_cot", 0) for r in cached_rows)
+                        c_q = sum(r.get("correct_qubo", 0) for r in cached_rows)
+                        tot = len(cached_rows)
+                        acc_greedy = c_g / tot if tot else 0.0
+                        acc_cot = c_c / tot if tot else 0.0
+                        acc_qubo = c_q / tot if tot else 0.0
+                        summary[b] = {
+                            "accuracy": {"greedy": acc_greedy, "cot": acc_cot, "qubo": acc_qubo},
+                            "num_samples": tot,
+                            "failed_samples": 0,
+                            "abs_gain_vs_greedy": acc_qubo - acc_greedy,
+                            "cot_gain_over_greedy": acc_cot - acc_greedy,
+                        }
+                        print(f"  [Cache] Found {tot} completed results in {jsonl_path}. Skipping generation.")
+                        print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
+                        for idx, r in enumerate(cached_rows):
+                            csv_row = {
+                                "benchmark": b,
+                                "id": idx,
+                                "question": r.get("question", ""),
+                                "gold": r.get("gold", ""),
+                                "pred_greedy": r.get("pred_greedy", ""),
+                                "pred_cot": r.get("pred_cot", ""),
+                                "pred_qubo": r.get("pred_qubo", ""),
+                                "correct_greedy": r.get("correct_greedy", 0),
+                                "correct_cot": r.get("correct_cot", 0),
+                                "correct_qubo": r.get("correct_qubo", 0),
+                                "runtime_greedy_s": 0.0,
+                                "runtime_cot_s": 0.0,
+                                "runtime_qubo_s": 0.0,
+                                "error": "",
+                            }
+                            writer.writerow(csv_row)
+                        continue
+                except Exception as cache_err:
+                    print(f"  ⚠️ Could not read cache {jsonl_path}: {cache_err}. Re-running...")
+
+            jsonl_file = open(jsonl_path, "w", encoding="utf-8")
             print(f"  [STAGE 2/5] Starting evaluation...")
             sys.stdout.flush()
             correct_greedy = 0
