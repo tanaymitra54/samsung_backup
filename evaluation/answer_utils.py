@@ -22,23 +22,28 @@ def extract_predicted_answer(prediction: str, is_mcq: bool = False) -> str:
     if is_mcq:
         # MCQ: Look for A, B, C, D, E, F, G, H, I, J
         upper = prediction.strip().upper()
-        # Look for explicit "ANSWER: X" or "CORRECT ANSWER IS X"
+        # 1. Look for explicit "ANSWER: X" or "ANSWER IS X" pattern
         tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-J])\b", upper)
         if tagged:
             return tagged.group(1)
-        # Look for explicit "CORRECT ANSWER IS X" pattern
+        # 2. Look for "CORRECT ANSWER IS X" or "OPTION X IS CORRECT"
         explicit = re.search(
-            r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-J])\b", upper
+            r"(?:CORRECT|RIGHT)\s+(?:ANSWER|CHOICE|OPTION)?\s*(?:IS\s+|:\s*)?([A-J])\b", upper
         )
         if explicit:
             return explicit.group(1)
-        # Look for single letter answer (first occurrence)
-        direct = re.search(r"\b([A-J])\b", upper)
-        if direct:
-            return direct.group(1)
-        # Last resort: return first letter found anywhere
-        all_letters = re.findall(r"[A-J]", upper)
-        return all_letters[0] if all_letters else ""
+        # 3. Look for "OPTION X" or "CHOICE X" in conclusion (last 300 chars)
+        last_chunk = upper[-300:] if len(upper) > 300 else upper
+        last_option = re.search(r"(?:OPTION|CHOICE)\s*([A-J])\b", last_chunk)
+        if last_option:
+            return last_option.group(1)
+        # 4. Search for standalone letter in the last 200 characters (where final decision is stated)
+        standalone_end = re.findall(r"\b([A-J])\b", last_chunk)
+        if standalone_end:
+            return standalone_end[-1]
+        # 5. Fallback: last single letter found anywhere in the text
+        all_letters = re.findall(r"\b([A-J])\b", upper)
+        return all_letters[-1] if all_letters else ""
     else:
         # Numerical answer
         if "####" in prediction:
