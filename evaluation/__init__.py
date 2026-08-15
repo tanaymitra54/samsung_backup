@@ -1,3 +1,12 @@
+"""
+==============================================================================
+FILE: evaluation/__init__.py
+ROLE: Benchmark Loader & Dataset Evaluation Runner Module
+BRANCH ADDITION (abhyuday): Fixed AI2 ARC Challenge dataset HF loader namespace
+(`allenai/ai2_arc`) to ensure robust benchmark dataset fetching across remote servers.
+==============================================================================
+"""
+
 import json
 import re
 from pathlib import Path
@@ -113,7 +122,7 @@ class BenchmarkRunner:
         return questions, answers
 
     def load_arc_challenge(self) -> tuple[list[str], list[str]]:
-        dataset = load_dataset("ai2_arc", "ARC-Challenge", split="test")
+        dataset = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")
         if not self.full_eval:
             dataset = dataset.select(range(min(self.subset_size, len(dataset))))
 

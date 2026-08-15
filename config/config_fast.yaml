@@ -1,6 +1,19 @@
+# ==============================================================================
+# FILE: config/config_fast.yaml
+# ROLE: Fast Execution & Rapid Evaluation Configuration File
+# BRANCH ADDITION (abhyuday): Lightweight profile configured for rapid testing,
+# fast SFT pipeline runs, lower token limits (256 max tokens), and smaller benchmark
+# evaluation subsets (subset_size: 50).
+# ==============================================================================
+
 model:
     name: "Qwen/Qwen2.5-3B-Instruct"
     cache_dir: "./cache/models"
+    candidates:
+        - "Qwen/Qwen3.5-4B"
+        - "Qwen/Qwen2.5-1.5B-Instruct"
+        - "meta-llama/Llama-3.2-3B-Instruct"
+        - "microsoft/Phi-4-mini-reasoning"
     load_in_4bit: false
     attn_implementation: "sdpa"
     use_vllm: false

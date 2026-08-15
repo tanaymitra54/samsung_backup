@@ -1,0 +1,50 @@
+{
+  "timestamp": "20260727_093452",
+  "seed": 42,
+  "benchmarks": [
+    "gsm8k",
+    "mmlu",
+    "bbh"
+  ],
+  "model": "meta-llama/Llama-3.2-3B-Instruct",
+  "device": "cuda:1",
+  "use_batch": true,
+  "batch_size": 4,
+  "use_vllm": false,
+  "multi_gpu": false,
+  "results": {
+    "gsm8k": {
+      "accuracy": {
+        "greedy": 0.15,
+        "cot": 0.63,
+        "qubo": 0.8
+      },
+      "num_samples": 100,
+      "failed_samples": 0,
+      "abs_gain_vs_greedy": 0.65,
+      "cot_gain_over_greedy": 0.48
+    },
+    "mmlu": {
+      "accuracy": {
+        "greedy": 0.2,
+        "cot": 0.25,
+        "qubo": 0.48
+      },
+      "num_samples": 100,
+      "failed_samples": 0,
+      "abs_gain_vs_greedy": 0.27999999999999997,
+      "cot_gain_over_greedy": 0.04999999999999999
+    },
+    "bbh": {
+      "accuracy": {
+        "greedy": 0.12962962962962962,
+        "cot": 0.4444444444444444,
+        "qubo": 0.4444444444444444
+      },
+      "num_samples": 54,
+      "failed_samples": 0,
+      "abs_gain_vs_greedy": 0.31481481481481477,
+      "cot_gain_over_greedy": 0.31481481481481477
+    }
+  }
+}

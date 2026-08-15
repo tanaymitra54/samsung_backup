@@ -1,11 +1,25 @@
+"""
+==============================================================================
+FILE: pipeline/device_utils.py
+ROLE: PyTorch CUDA & Compute Device Resolution Utility
+BRANCH ADDITION (abhyuday): Added CUDA device index boundary validation (`idx >= count`)
+to automatically fall back to `cuda:0` when an requested GPU index exceeds available hardware.
+==============================================================================
+"""
+
 import torch
 
 
 def resolve_device(preferred: str | None = None) -> torch.device:
     if preferred:
         device = torch.device(preferred)
-        if device.type == "cuda" and not torch.cuda.is_available():
-            return torch.device("cpu")
+        if device.type == "cuda":
+            if not torch.cuda.is_available():
+                return torch.device("cpu")
+            count = torch.cuda.device_count()
+            idx = device.index if device.index is not None else 0
+            if idx >= count:
+                return torch.device("cuda:0")
         return device
     if torch.cuda.is_available():
         return torch.device("cuda:0")

@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Download candidate SLM weights into config cache_dir."""
+"""
+==============================================================================
+FILE: scripts/download_models.py
+ROLE: Offline Model Weights & Tokenizer Downloader Utility
+BRANCH ADDITION (abhyuday): Enhanced Hugging Face download helper supporting offline
+caching for model candidates (Qwen, Llama 3.2, Phi-4) and NLI verifier models.
+==============================================================================
+
+Download candidate SLM weights into config cache_dir.
+"""
 
 import argparse
 import os
@@ -10,6 +19,7 @@ from huggingface_hub import snapshot_download
 
 DEFAULT_MODELS = [
     "Qwen/Qwen3.5-4B",
+    "Qwen/Qwen2.5-1.5B-Instruct",
     "meta-llama/Llama-3.2-3B-Instruct",
     "microsoft/Phi-4-mini-reasoning",
 ]

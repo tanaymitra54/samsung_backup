@@ -1,0 +1,149 @@
+# ==============================================================================
+# FILE: config/config_original.yaml
+# ROLE: Baseline Configuration Backup File
+# BRANCH ADDITION (abhyuday): Preserved original configuration baseline prior to
+# hyperparameter tuning and prompt/sampling parameter updates. Serves as a reference
+# for comparing default baseline model behavior vs tuned settings.
+# ==============================================================================
+
+model:
+    name: "meta-llama/Llama-3.2-3B-Instruct"
+    cache_dir: "./cache/models"
+    candidates:
+        - "Qwen/Qwen3.5-4B"
+        - "Qwen/Qwen2.5-1.5B-Instruct"
+        - "meta-llama/Llama-3.2-3B-Instruct"
+        - "microsoft/Phi-4-mini-reasoning"
+    load_in_4bit: false
+    attn_implementation: "sdpa"
+    use_vllm: false
+    vllm:
+        dtype: "auto"
+        quantization: "fp8"
+        tensor_parallel_size: 1
+        gpu_memory_utilization: 0.9
+
+pipeline:
+    num_answers: 4
+    num_reasons: 4
+    subset_size: 6
+    max_new_tokens: 512
+    sampling_max_new_tokens: 512
+    temperature_range: [0.3, 0.9]
+    top_p: 0.95
+
+verifier:
+    math_mode: "calculator"
+    nli_model: "cross-encoder/nli-deberta-v3-base"
+    nli_threshold: 0.5
+    device_map_verifier: null
+
+    # -----------------------------------------------------------------------
+    # SCORING WEIGHTS — controls how quality_score is computed per task type.
+    # All weights are configurable here so experiments can be run without
+    # touching Python source code.
+    #
+    # MATH scoring formula:
+    #   score = math_answer_weight * answer_match
+    #         + math_consistency_weight * arithmetic_consistency
+    #   answer_match:          1.0 if predicted number == gold (within tolerance), else 0.0
+    #   arithmetic_consistency: fraction of intermediate results chained into later steps
+    #
+    # LANGUAGE scoring formula:
+    #   score = lang_nli_weight      * P(entailment)       [NLI model signal]
+    #         + lang_coverage_weight * lexical_coverage     [content-word overlap with question]
+    #         + lang_structure_weight * structural_depth    [sigmoid of sentence count]
+    #   All three signals ∈ [0, 1], so final score ∈ [0, 1].
+    #
+    # Sigmoid parameters for structural completeness (language only):
+    #   structure_mu:  sentence count at the sigmoid inflection point (1 sentence = bad, 3+ = good)
+    #   structure_tau: softness — larger tau = more gradual transition
+    # -----------------------------------------------------------------------
+    scoring:
+        # MATH scoring: score = math_answer_weight × answer_match
+        #                     + math_consistency_weight × arithmetic_consistency
+        #                     + consensus_weight × cross_chain_consensus
+        # Weights renormalised to sum to 1.0 (0.63 + 0.27 + 0.10 = 1.0).
+        math_answer_weight:    0.63   # α: answer correctness — primary oracle signal
+        math_consistency_weight: 0.27 # β: arithmetic expression correctness — process signal
+        consensus_weight:      0.10   # γ: cross-chain majority vote (Wang et al. 2023)
+
+        lang_nli_weight:       0.60   # NLI entailment — logical support of the answer (dominant)
+        lang_coverage_weight:  0.25   # lexical coverage — on-topic content words
+        lang_structure_weight: 0.15   # structural depth — multi-step reasoning indicator
+        structure_mu:          1.5    # inflection: 1 sentence → ~0.38, 3 sentences → ~0.82
+        structure_tau:         1.0    # sigmoid softness parameter
+
+qubo:
+    max_vars: 200
+    similarity_metric: "cosine"
+    clustering_method: "kmeans"
+    penalty_weight: 2.0
+    diversity_bonus: 0.5
+    hubo_enabled: false
+    hubo_triplet_penalty: 1.0
+    embedder_device: null
+
+    # Fix #2 — Answer-aware off-diagonal: Q[i][j] = (α·cosine + β·answer_agree) × penalty_weight
+    # Two chains with the same extracted answer are penalised for co-selection even if their
+    # text embeddings appear diverse. Empty-answer chains never get agree=1.
+    answer_sim_weight:   0.6   # α: textual cosine similarity component
+    answer_agree_weight: 0.4   # β: logical agreement (same extracted answer)
+
+    # Fix #3 — Soft cardinality constraint: penalises solutions where Σx_i ≠ subset_size.
+    # Adds λ_c·(1−2k) to each diagonal and 2λ_c to each off-diagonal.
+    # Keep well below penalty_weight to avoid dominating the diversity signal.
+    # Needs empirical tuning per dataset — start at 0.1, increase if the solver
+    # frequently selects too few or too many chains.
+    cardinality_penalty: 0.1
+
+    # Fix #6 — Top-k representatives per cluster fed to the QUBO.
+    # Taking 2 (vs 1) lets the solver choose between the best and second-best
+    # within each semantic group, preserving QUBO's ability to make real tradeoffs.
+    # Singleton clusters contribute 1 representative regardless of this setting.
+    top_k_per_cluster: 2
+
+solver:
+    method: "simulated_annealing"
+    sa:
+        initial_temp: 100.0
+        final_temp: 0.01
+        cooling_rate: 0.99
+        iterations: 500
+        num_reads: 2
+    gpu:
+        enabled: true
+        num_parallel_reads: 1024
+        use_parallel_tempering: true
+        use_counterdiabatic: false
+
+training:
+    sft_epochs: 3
+    learning_rate: 2e-5
+    batch_size: 8
+    lora_rank: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    output_dir: "./checkpoints"
+    use_peft: true
+    iterative_rounds: 3
+    max_seq_length: 2048
+    warmup_steps: 100
+
+evaluation:
+    device: "cuda:0"
+    benchmarks:
+        - "gsm8k"
+        - "bbh"
+        - "strategyqa"
+        - "arc_challenge"
+        - "mmlu"
+        - "math 500"
+        - "gpqa diamond"
+        - "aime"
+        - "mmlu pro"
+    subset_size: 200
+    full_eval: false
+    batch_size: 4
+    use_batched_inference: true

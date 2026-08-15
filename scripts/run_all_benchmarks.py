@@ -1,3 +1,13 @@
+"""
+==============================================================================
+FILE: scripts/run_all_benchmarks.py
+ROLE: Benchmark Evaluation Suite & Execution Harness
+BRANCH ADDITION (abhyuday): Added question-level partial caching and resume support,
+allowing evaluation runs to skip previously evaluated questions, recover safely from
+interruptions, and write continuous evaluation metrics.
+==============================================================================
+"""
+
 import argparse
 import csv
 import json
@@ -55,7 +65,10 @@ def parse_args():
         "--full", action="store_true", help="Run on full datasets (ignore subset_size)"
     )
     parser.add_argument(
-        "--output-dir", default="outputs", help="Directory for output files"
+        "--output-dir", default="results/eval", help="Directory for output files"
+    )
+    parser.add_argument(
+        "--condition-label", default="base", help="Condition label for JSONL output (e.g. A, B, base)"
     )
     parser.add_argument(
         "--benchmarks",
@@ -131,21 +144,28 @@ def extract_mcq_choice(text: str) -> str:
     upper = text.strip().upper()
     import re
 
-    # Look for "ANSWER: A" or "ANSWER IS A" pattern
+    # 1. Look for explicit "ANSWER: X" or "ANSWER IS X" pattern
     tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-J])\b", upper)
     if tagged:
         return tagged.group(1)
-    # Look for explicit patterns
+    # 2. Look for "CORRECT ANSWER IS X" or "OPTION X IS CORRECT"
     explicit = re.search(
-        r"(?:CORRECT|RIGHT)\s+ANSWER\s+(?:IS\s+|:\s*)?([A-J])\b", upper
+        r"(?:CORRECT|RIGHT)\s+(?:ANSWER|CHOICE|OPTION)?\s*(?:IS\s+|:\s*)?([A-J])\b", upper
     )
     if explicit:
         return explicit.group(1)
-    # Look for single letter answer
-    direct = re.search(r"\b([A-J])\b", upper)
-    if direct:
-        return direct.group(1)
-    return ""
+    # 3. Look for "OPTION X" or "CHOICE X" in conclusion (last 300 chars)
+    last_chunk = upper[-300:] if len(upper) > 300 else upper
+    last_option = re.search(r"(?:OPTION|CHOICE)\s*([A-J])\b", last_chunk)
+    if last_option:
+        return last_option.group(1)
+    # 4. Search for standalone letter in the last 200 characters (where final decision is stated)
+    standalone_end = re.findall(r"\b([A-J])\b", last_chunk)
+    if standalone_end:
+        return standalone_end[-1]
+    # 5. Fallback: last single letter found anywhere in the text
+    all_letters = re.findall(r"\b([A-J])\b", upper)
+    return all_letters[-1] if all_letters else ""
 
 
 def _mcq_prompt(question: str) -> str:
@@ -648,7 +668,10 @@ def main():
         print(f"{'=' * 70}")
         print("[1/6] Loading inference model...")
         sys.stdout.flush()
-        inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
+        _adapter_path = os.environ.get("QUBO_ADAPTER_PATH") or None
+        if _adapter_path:
+            print(f"[Eval] LoRA adapter: {_adapter_path}")
+        inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm, adapter_path=_adapter_path)
         runtime_device = str(inference.device)
 
         print("[2/6] Loading sampler (sharing model)...")
@@ -703,6 +726,7 @@ def main():
         writer.writeheader()
 
         for b in benchmark_list:
+            jsonl_path = os.path.join(args.output_dir, f"{args.condition_label}_{b}_results.jsonl")
             print(f"\n{'=' * 60}")
             print(f"Benchmark: {b}")
             print(f"{'=' * 60}")
@@ -724,6 +748,92 @@ def main():
 
             task_type = TASK_TYPE.get(b, "math")
             print(f"  ✓ Loaded {len(questions)} questions")
+
+            # Check if completed or partial cached results exist for this benchmark & condition
+            cached_rows = []
+            if os.path.exists(jsonl_path):
+                try:
+                    with open(jsonl_path, "r", encoding="utf-8") as f_check:
+                        cached_rows = [json.loads(line) for line in f_check if line.strip()]
+                except Exception as cache_err:
+                    print(f"  ⚠️ Could not read cache {jsonl_path}: {cache_err}. Starting fresh...")
+                    cached_rows = []
+
+            if len(cached_rows) >= len(questions) and len(questions) > 0:
+                cached_rows = cached_rows[:len(questions)]
+                c_g = sum(r.get("correct_greedy", 0) for r in cached_rows)
+                c_c = sum(r.get("correct_cot", 0) for r in cached_rows)
+                c_q = sum(r.get("correct_qubo", 0) for r in cached_rows)
+                tot = len(cached_rows)
+                acc_greedy = c_g / tot if tot else 0.0
+                acc_cot = c_c / tot if tot else 0.0
+                acc_qubo = c_q / tot if tot else 0.0
+                summary[b] = {
+                    "accuracy": {"greedy": acc_greedy, "cot": acc_cot, "qubo": acc_qubo},
+                    "num_samples": tot,
+                    "failed_samples": 0,
+                    "abs_gain_vs_greedy": acc_qubo - acc_greedy,
+                    "cot_gain_over_greedy": acc_cot - acc_greedy,
+                }
+                print(f"  [Cache] Found {tot}/{len(questions)} completed results in {jsonl_path}. Skipping generation.")
+                print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
+                for idx, r in enumerate(cached_rows):
+                    csv_row = {
+                        "benchmark": b,
+                        "id": idx,
+                        "question": r.get("question", ""),
+                        "gold": r.get("gold", ""),
+                        "pred_greedy": r.get("pred_greedy", ""),
+                        "pred_cot": r.get("pred_cot", ""),
+                        "pred_qubo": r.get("pred_qubo", ""),
+                        "correct_greedy": r.get("correct_greedy", 0),
+                        "correct_cot": r.get("correct_cot", 0),
+                        "correct_qubo": r.get("correct_qubo", 0),
+                        "runtime_greedy_s": 0.0,
+                        "runtime_cot_s": 0.0,
+                        "runtime_qubo_s": 0.0,
+                        "error": "",
+                    }
+                    writer.writerow(csv_row)
+                continue
+
+            num_cached = len(cached_rows)
+            if num_cached > 0:
+                print(f"  [Cache] Resuming {b} from question {num_cached + 1}/{len(questions)} ({num_cached} cached).")
+                correct_greedy = sum(r.get("correct_greedy", 0) for r in cached_rows)
+                correct_cot = sum(r.get("correct_cot", 0) for r in cached_rows)
+                correct_qubo = sum(r.get("correct_qubo", 0) for r in cached_rows)
+                total = num_cached
+                failed = 0
+                for idx, r in enumerate(cached_rows):
+                    csv_row = {
+                        "benchmark": b,
+                        "id": idx,
+                        "question": r.get("question", ""),
+                        "gold": r.get("gold", ""),
+                        "pred_greedy": r.get("pred_greedy", ""),
+                        "pred_cot": r.get("pred_cot", ""),
+                        "pred_qubo": r.get("pred_qubo", ""),
+                        "correct_greedy": r.get("correct_greedy", 0),
+                        "correct_cot": r.get("correct_cot", 0),
+                        "correct_qubo": r.get("correct_qubo", 0),
+                        "runtime_greedy_s": 0.0,
+                        "runtime_cot_s": 0.0,
+                        "runtime_qubo_s": 0.0,
+                        "error": "",
+                    }
+                    writer.writerow(csv_row)
+                questions = questions[num_cached:]
+                gold_answers = gold_answers[num_cached:]
+                jsonl_file = open(jsonl_path, "a", encoding="utf-8")
+            else:
+                correct_greedy = 0
+                correct_cot = 0
+                correct_qubo = 0
+                total = 0
+                failed = 0
+                jsonl_file = open(jsonl_path, "w", encoding="utf-8")
+
             print(f"  [STAGE 2/5] Starting evaluation...")
             sys.stdout.flush()
             correct_greedy = 0
@@ -807,6 +917,24 @@ def main():
                                 "error": "",
                             }
                             writer.writerow(row)
+                            
+                            jsonl_row = {
+                                "id": i + j,
+                                "question": q,
+                                "gold": gold,
+                                "pred_greedy_raw": preds_g[j],
+                                "pred_cot_raw": preds_c[j],
+                                "pred_qubo_raw": pred_qubo,
+                                "pred_greedy": pred_g_n,
+                                "pred_cot": pred_c_n,
+                                "pred_qubo": pred_q_n,
+                                "correct_greedy": c_g,
+                                "correct_cot": c_c,
+                                "correct_qubo": c_q,
+                            }
+                            jsonl_file.write(json.dumps(jsonl_row, ensure_ascii=False) + "\n")
+                            jsonl_file.flush()
+
                             all_rows.append(row)
                             if len(all_rows) <= 3:
                                 print(
@@ -911,6 +1039,24 @@ def main():
                             "error": "",
                         }
                         writer.writerow(row)
+                        
+                        jsonl_row = {
+                            "id": idx,
+                            "question": q,
+                            "gold": gold,
+                            "pred_greedy_raw": pred_greedy,
+                            "pred_cot_raw": pred_cot,
+                            "pred_qubo_raw": pred_qubo,
+                            "pred_greedy": pred_g_n,
+                            "pred_cot": pred_c_n,
+                            "pred_qubo": pred_q_n,
+                            "correct_greedy": c_g,
+                            "correct_cot": c_c,
+                            "correct_qubo": c_q,
+                        }
+                        jsonl_file.write(json.dumps(jsonl_row, ensure_ascii=False) + "\n")
+                        jsonl_file.flush()
+
                         all_rows.append(row)
                         if len(all_rows) <= 3:
                             print(
@@ -953,6 +1099,7 @@ def main():
             print(
                 f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%} | samples={total} failed={failed}"
             )
+            jsonl_file.close()
 
             if args.wandb_project:
                 try:
