@@ -1,4 +1,14 @@
 """
+==============================================================================
+FILE: scripts/tune_qubo_params.py
+ROLE: QUBO Hyperparameter Grid Search & Optimization Script
+BRANCH ADDITION (abhyuday): Newly introduced automated grid search tool evaluating 81
+combinations of QUBO objective coefficients (`penalty_weight`, `diversity_bonus`,
+`cardinality_penalty`, `answer_agree_weight`). Pre-caches reasoning chains and NLI scores
+to evaluate all 81 combinations rapidly without re-running neural inference. Outputs
+`config/best_qubo_params.yaml`.
+==============================================================================
+
 scripts/tune_qubo_params.py  —  QUBO Hyperparameter Grid Search
 ================================================================
 

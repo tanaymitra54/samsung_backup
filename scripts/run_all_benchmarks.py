@@ -1,3 +1,13 @@
+"""
+==============================================================================
+FILE: scripts/run_all_benchmarks.py
+ROLE: Benchmark Evaluation Suite & Execution Harness
+BRANCH ADDITION (abhyuday): Added question-level partial caching and resume support,
+allowing evaluation runs to skip previously evaluated questions, recover safely from
+interruptions, and write continuous evaluation metrics.
+==============================================================================
+"""
+
 import argparse
 import csv
 import json

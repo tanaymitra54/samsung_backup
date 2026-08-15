@@ -1,4 +1,13 @@
 """
+==============================================================================
+FILE: pipeline/sampling.py
+ROLE: Diverse Reasoning Trace Sampler
+BRANCH ADDITION (abhyuday):
+  1. KV Caching Activation: Enabled `use_cache=True` during candidate sampling to
+     significantly accelerate reasoning trace generation.
+  2. Candidate Pool Adjustment: Refined default candidate pool count parameters.
+==============================================================================
+
 pipeline/sampling.py  —  Diverse Reasoning Trace Sampler
 =========================================================
 
@@ -23,6 +32,7 @@ forms of deliberate diversity:
   2. TEMPERATURE RANDOMISATION:
      For each perturbation, we sample `num_answers` completions at a randomly
      chosen temperature from [temperature_range_low, temperature_range_high].
+"""
 
      WHY RANDOM TEMPERATURE:
      • Low temperature (≈0.3): the model is more deterministic and confident —

@@ -1,3 +1,13 @@
+"""
+==============================================================================
+FILE: scripts/evaluate_all.py
+ROLE: Automated Multi-Stage Model Evaluation Harness (Base vs SFT vs DPO)
+BRANCH ADDITION (abhyuday): Newly introduced orchestrator script that runs
+comparative evaluations across Base LLM, SFT LoRA checkpoint, and DPO LoRA checkpoint
+over standard benchmark sets (GSM8K, MMLU, BBH, ARC).
+==============================================================================
+"""
+
 import argparse
 import subprocess
 import sys

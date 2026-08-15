@@ -1,3 +1,14 @@
+"""
+==============================================================================
+FILE: evaluation/answer_utils.py
+ROLE: Answer Extraction & Normalization Utilities
+BRANCH ADDITION (abhyuday): Enhanced Multiple-Choice Question (MCQ) extraction logic
+in `extract_predicted_answer()`. Replaced naive regex matching with a robust 5-stage
+heuristic sequence (explicit tags, choice phrase matching, conclusion lookback in the
+last 300 chars, standalone letter detection, and fallback scan).
+==============================================================================
+"""
+
 import re
 
 

@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Download candidate SLM weights into config cache_dir."""
+"""
+==============================================================================
+FILE: scripts/download_models.py
+ROLE: Offline Model Weights & Tokenizer Downloader Utility
+BRANCH ADDITION (abhyuday): Enhanced Hugging Face download helper supporting offline
+caching for model candidates (Qwen, Llama 3.2, Phi-4) and NLI verifier models.
+==============================================================================
+
+Download candidate SLM weights into config cache_dir.
+"""
 
 import argparse
 import os

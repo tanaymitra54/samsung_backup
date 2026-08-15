@@ -1,3 +1,11 @@
+# ==============================================================================
+# FILE: config/config.yaml
+# ROLE: Main System Configuration File
+# BRANCH ADDITION (abhyuday): Updated default candidate sampling counts, token limits,
+# model parameterization, QUBO objective weights (answer_agree_weight, cardinality_penalty),
+# and evaluation parameters used across sampling, inference, fine-tuning, and benchmarking.
+# ==============================================================================
+
 model:
     name: "meta-llama/Llama-3.2-3B-Instruct"
     cache_dir: "./cache/models"
@@ -135,7 +143,7 @@ evaluation:
         - "gpqa diamond"
         - "aime"
         - "mmlu pro"
-    subset_size: 200
+    subset_size: 300
     full_eval: false
     batch_size: 4
     use_batched_inference: true

@@ -1,3 +1,11 @@
+# ==============================================================================
+# FILE: config/config_fast.yaml
+# ROLE: Fast Execution & Rapid Evaluation Configuration File
+# BRANCH ADDITION (abhyuday): Lightweight profile configured for rapid testing,
+# fast SFT pipeline runs, lower token limits (256 max tokens), and smaller benchmark
+# evaluation subsets (subset_size: 50).
+# ==============================================================================
+
 model:
     name: "Qwen/Qwen2.5-3B-Instruct"
     cache_dir: "./cache/models"

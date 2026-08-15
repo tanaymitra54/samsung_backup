@@ -1,4 +1,13 @@
 """
+==============================================================================
+FILE: scripts/fast_finetune_pipeline.py
+ROLE: Fast Supervised Fine-Tuning (SFT) & End-to-End Orchestrator Pipeline
+BRANCH ADDITION (abhyuday): Newly created all-in-one fast orchestration pipeline that drives:
+1. Data Generation (`scripts/generate_training_data.py`)
+2. LoRA Supervised Fine-Tuning using `trl` `SFTTrainer` with 4-bit / 8-bit QLoRA
+3. Checkpoint saving & model evaluation dispatch.
+==============================================================================
+
 scripts/fast_finetune_pipeline.py
 ==================================
 All-in-one orchestration script: QUBO data generation -> LoRA SFT -> benchmark eval.

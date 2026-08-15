@@ -1,4 +1,13 @@
 """
+==============================================================================
+FILE: scripts/generate_training_data.py
+ROLE: QUBO-Curated Training Dataset Generator
+BRANCH ADDITION (abhyuday): Newly created dataset generation engine that processes GSM8K,
+StrategyQA, ARC-Challenge, and LogiQA using the QUBO pipeline (sampling -> NLI verification ->
+QUBO optimization -> annealing selection) to create high-quality training & validation JSONL data
+(`finetune_train.jsonl`, `finetune_val.jsonl`) with complete candidate chain pools.
+==============================================================================
+
 scripts/generate_training_data.py
 ==================================
 Generate a QUBO-curated fine-tuning dataset from multiple reasoning sources.

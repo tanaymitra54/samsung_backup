@@ -1,3 +1,13 @@
+"""
+==============================================================================
+FILE: scripts/run_dpo.py
+ROLE: Direct Preference Optimization (DPO) Fine-Tuning Module
+BRANCH ADDITION (abhyuday): Newly introduced trainer script using `trl` `DPOTrainer`.
+Features dynamic kwarg parameter passing to maintain cross-version compatibility across
+differing `trl` / `transformers` releases and includes FSDP compatibility monkey-patches.
+==============================================================================
+"""
+
 import argparse
 import os
 import json

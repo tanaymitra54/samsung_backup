@@ -1,3 +1,12 @@
+"""
+==============================================================================
+FILE: evaluation/__init__.py
+ROLE: Benchmark Loader & Dataset Evaluation Runner Module
+BRANCH ADDITION (abhyuday): Fixed AI2 ARC Challenge dataset HF loader namespace
+(`allenai/ai2_arc`) to ensure robust benchmark dataset fetching across remote servers.
+==============================================================================
+"""
+
 import json
 import re
 from pathlib import Path

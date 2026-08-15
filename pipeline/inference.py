@@ -1,4 +1,15 @@
 """
+==============================================================================
+FILE: pipeline/inference.py
+ROLE: Final Answer Generation & Inference Scaffolding Engine
+BRANCH ADDITION (abhyuday):
+  1. Dynamic LoRA Adapter Fusion: Support in `InferencePipeline.__init__()`
+     for loading trained LoRA adapters dynamically via `adapter_path` or
+     `QUBO_ADAPTER_PATH` env var (`PeftModel` + `merge_and_unload`).
+  2. KV Caching Optimization: Enabled `use_cache=True` during token generation.
+  3. Memory Management: Cleaned up cache management during batched inference.
+==============================================================================
+
 pipeline/inference.py  —  Final Answer Generation
 ==================================================
 

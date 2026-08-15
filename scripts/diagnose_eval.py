@@ -1,3 +1,13 @@
+"""
+==============================================================================
+FILE: scripts/diagnose_eval.py
+ROLE: Evaluation Results Diagnostic & Error Analysis Script
+BRANCH ADDITION (abhyuday): Newly introduced diagnostic tool that inspects
+evaluation output `.jsonl` logs, reports accuracy breakdowns, counts blank or
+malformed responses, and samples correct vs incorrect model reasoning chains.
+==============================================================================
+"""
+
 import argparse
 import json
 import random

@@ -1,3 +1,14 @@
+"""
+==============================================================================
+FILE: scripts/generate_preference_pairs.py
+ROLE: DPO Preference Pair Dataset Generator
+BRANCH ADDITION (abhyuday): Newly introduced tool that extracts candidate reasoning
+chains from SFT data (`full_chains_pool`), ranks them by verifier quality score, and
+filters chosen vs rejected reasoning pairs with a minimum score margin (default 0.3)
+for Direct Preference Optimization (DPO).
+==============================================================================
+"""
+
 import argparse
 import json
 from pathlib import Path
