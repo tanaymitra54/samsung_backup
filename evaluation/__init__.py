@@ -90,7 +90,35 @@ class BenchmarkRunner:
         return questions, answers
 
     def load_strategyqa(self) -> tuple[list[str], list[str]]:
-        raise NotImplementedError("StrategyQA dataset temporarily unavailable")
+        """StrategyQA multi-hop yes/no questions.
+
+        Uses ChilleD/StrategyQA, which ships pre-defined disjoint train/test
+        splits. The two sources previously tried here are both broken under
+        datasets>=3: wics/strategy-qa is a loading script (no longer supported)
+        and voidful/StrategyQA fails schema validation mid-generation -- which is
+        why this loader used to raise NotImplementedError.
+
+        Evaluation reads the TEST split; scripts/generate_training_data.py reads
+        the TRAIN split, so the two never overlap.
+
+        Gold is normalised to "yes"/"no". is_correct() treats true/false as the
+        same polarity pair, so a model answering "True" still grades correctly.
+        """
+        dataset = load_dataset("ChilleD/StrategyQA", split="test")
+        if not self.full_eval:
+            dataset = dataset.select(range(min(self.subset_size, len(dataset))))
+
+        questions = []
+        answers = []
+        for item in dataset:
+            q = str(item["question"]).strip()
+            questions.append(
+                f"Question: {q}\n"
+                "Answer this yes/no question. Think step by step, then state your "
+                "final answer as either 'yes' or 'no'."
+            )
+            answers.append("yes" if bool(item["answer"]) else "no")
+        return questions, answers
 
     def load_mmlu(self) -> tuple[list[str], list[str]]:
         subjects = [

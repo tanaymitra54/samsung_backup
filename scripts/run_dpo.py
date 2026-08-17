@@ -38,6 +38,16 @@ def main():
     parser.add_argument("--batch-size", type=int, default=2, help="Per device batch size")
     parser.add_argument("--lora-rank", type=int, default=32, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=int, default=64, help="LoRA alpha")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from the newest per-epoch checkpoint in --output-dir",
+    )
+    parser.add_argument(
+        "--sft-adapter", default=None,
+        help="SFT adapter to merge into the base model before DPO. Standard DPO "
+             "initialises from the SFT policy; without this the run is DPO-from-base "
+             "and does not build on the SFT stage at all.",
+    )
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
@@ -94,7 +104,21 @@ def main():
     
     # Base model
     model = AutoModelForCausalLM.from_pretrained(model_name, **mkw)
-    
+
+    # Initialise from the SFT policy when one is supplied. The adapter is merged
+    # into the weights so the fresh DPO LoRA below trains on top of it, and the
+    # implicit reference model DPOTrainer derives is the SFT policy rather than
+    # the raw base model -- which is what DPO's objective assumes.
+    if args.sft_adapter:
+        print(f"[DPO] Merging SFT adapter as the starting policy: {args.sft_adapter}")
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, args.sft_adapter, is_trainable=False)
+        model = model.merge_and_unload()
+        print("[DPO] SFT adapter merged.")
+    else:
+        print("[DPO] WARNING: no --sft-adapter given; training DPO from the BASE model.")
+
     # We also need a reference model. PEFT handles this automatically if we pass a standard model and peft_config.
     peft_config = LoraConfig(
         r=args.lora_rank,
@@ -157,9 +181,25 @@ def main():
 
     trainer = DPOTrainer(**trainer_kwargs)
 
+    # Resume from the newest per-epoch checkpoint when asked. save_strategy is
+    # "epoch", so the checkpoints exist; without this a crash restarts from zero.
+    resume_ckpt = None
+    if args.resume:
+        try:
+            from transformers.trainer_utils import get_last_checkpoint
+            if os.path.isdir(args.output_dir):
+                resume_ckpt = get_last_checkpoint(args.output_dir)
+        except Exception as e:
+            print(f"[DPO] Could not look for a checkpoint to resume ({e}).")
+        print(
+            f"[DPO] Resuming from checkpoint: {resume_ckpt}" if resume_ckpt
+            else "[DPO] No existing checkpoint found; starting fresh."
+        )
+
     print(f"[DPO] Starting training for {args.epochs} epochs...")
-    trainer.train()
-    
+    trainer.train(resume_from_checkpoint=resume_ckpt)
+
+
     adapter_out = os.path.join(args.output_dir, "final_adapter")
     trainer.save_model(adapter_out)
     tokenizer.save_pretrained(adapter_out)

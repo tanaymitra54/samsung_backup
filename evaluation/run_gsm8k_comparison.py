@@ -123,8 +123,9 @@ def main():
     solver = SimulatedAnnealingSolver()
     inference = InferencePipeline()
 
+    from tqdm import tqdm
     rows = []
-    for idx, item in enumerate(dataset):
+    for idx, item in tqdm(enumerate(dataset), total=len(dataset), desc="Evaluating GSM8K"):
         q = item["question"]
         gold = extract_gsm8k_gold(item["answer"])
 

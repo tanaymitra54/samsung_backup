@@ -113,6 +113,10 @@ class ReasonVerifier:
         # Sigmoid parameters for structural completeness (language only)
         self.struct_mu        = scoring.get("structure_mu",  1.5)
         self.struct_tau       = scoring.get("structure_tau", 1.0)
+        # Gold-free weights, used by score_batch() when no answer key is supplied
+        # (i.e. at evaluation / deployment). See config.yaml for the rationale.
+        self.gold_free_consensus_w   = scoring.get("gold_free_consensus_weight",   0.65)
+        self.gold_free_consistency_w = scoring.get("gold_free_consistency_weight", 0.35)
 
         preferred_device = device or self.config.get("evaluation", {}).get("device")
         self.device = resolve_device(preferred_device)
@@ -990,15 +994,36 @@ class ReasonVerifier:
         self.compute_self_consistency(samples, task_type=task_type)
 
         # ── Step 3: Blend consensus into final correctness_score ──────────────
-        gamma = self.consensus_w  # γ = consensus_weight from config
+        #
+        # Two regimes, distinguished by whether an answer key was supplied:
+        #
+        #  ORACLE (gold is not None) — curating TRAINING data. answer_match is
+        #    already folded into base_score and legitimately dominates; consensus
+        #    is a small corrective (γ = consensus_weight, default 0.10).
+        #
+        #  GOLD-FREE (gold is None) — EVALUATION or deployment. base_score holds
+        #    process quality only (arithmetic consistency / NLI composite), which
+        #    is a weak correctness signal on its own, so cross-chain consensus
+        #    carries most of the weight. Passing gold here would leak the answer
+        #    key into chain selection and inflate reported accuracy.
+        gold_free = gold is None
+
         for sample in samples:
             base_score = sample.pop("_base_score")  # remove temporary key
             consensus  = sample["consensus_score"]
-            # Blend: downweight the base score by (1-γ) and add γ·consensus.
-            # This preserves the relative structure of base scores while
-            # pulling high-consensus chains up regardless of individual score.
-            sample["correctness_score"] = float(np.clip(
-                (1.0 - gamma) * base_score + gamma * consensus, 0.0, 1.0
-            ))
+
+            if gold_free:
+                blended = (
+                    self.gold_free_consistency_w * base_score
+                    + self.gold_free_consensus_w * consensus
+                )
+            else:
+                gamma = self.consensus_w  # γ = consensus_weight from config
+                # Blend: downweight the base score by (1-γ) and add γ·consensus.
+                # This preserves the relative structure of base scores while
+                # pulling high-consensus chains up regardless of individual score.
+                blended = (1.0 - gamma) * base_score + gamma * consensus
+
+            sample["correctness_score"] = float(np.clip(blended, 0.0, 1.0))
 
         return samples

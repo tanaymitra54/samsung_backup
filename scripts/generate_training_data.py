@@ -37,6 +37,7 @@ import math
 import os
 os.environ["HF_HUB_DISABLE_DISK_SPACE_WARNING"] = "1"
 import random
+import re
 import sys
 import time
 import warnings
@@ -70,13 +71,37 @@ DATASET_CONFIGS = {
         "task_type": "math",
         "target_frac": 0.40,
     },
+    # MMLU CAUTION: cais/mmlu has no "train" split, and the evaluation suite
+    # scores on split="test". Training on "test" would be direct contamination of
+    # the benchmark we report, so this uses "auxiliary_train" -- MMLU's own
+    # designated training pool, disjoint from test.
+    #
+    # n defaults to 0 (see FULL_RUN_DEFAULTS): MMLU is off unless explicitly
+    # requested. Raise it only with auxiliary_train, never with test.
     "mmlu": {
         "hf_path": "cais/mmlu",
         "hf_name": "all",
-        "split": "test",
-        "n": 800,
+        "split": "auxiliary_train",
+        "n": 0,
         "task_type": "commonsense",
         "target_frac": 0.25,
+    },
+    # MATH (Hendrycks) — competition-level multi-step math.
+    #
+    # WHY: evaluation covers MATH-500 and AIME, but training was GSM8K-only, i.e.
+    # grade-school arithmetic used to prepare for competition algebra. This is the
+    # largest train/eval capability gap in the suite.
+    #
+    # nlile/hendrycks-MATH-benchmark ships train=12000 / test=500. Its test split
+    # is MATH-500; load_math() additionally drops the handful of train problems
+    # that appear in HuggingFaceH4/MATH-500, which is what the evaluator scores.
+    "math": {
+        "hf_path": "nlile/hendrycks-MATH-benchmark",
+        "hf_name": None,
+        "split": "train",
+        "n": 0,
+        "task_type": "math",
+        "target_frac": 0.20,
     },
     "arc": {
         "hf_path": "allenai/ai2_arc",
@@ -87,7 +112,8 @@ DATASET_CONFIGS = {
         "target_frac": 0.15,
     },
     "strategyqa": {
-        "hf_path": "wics/strategy-qa",
+        # ChilleD/StrategyQA ships disjoint train/test splits; evaluation uses test.
+        "hf_path": "ChilleD/StrategyQA",
         "hf_name": None,
         "split": "train",
         "n": 800,
@@ -111,6 +137,32 @@ OPENORCA_CONFIG = {
     "target_frac": 0.0,
 }
 
+# A curated example whose best chain scores below this is treated as "hard" and
+# recorded for the next round to revisit. Chosen just under the SFT quality gate
+# (0.70) so it captures items that barely made the cut as well as those that missed.
+HARD_ITEM_SCORE_THRESHOLD = 0.70
+
+# Keys injected into an item during processing; stripped before it is recorded as
+# a hard item so the focus file stays a clean loader-shaped question record.
+_RUNTIME_ITEM_KEYS = ("greedy_would_have_failed", "full_chains_pool")
+
+
+def _strip_runtime_keys(item: dict) -> dict:
+    return {k: v for k, v in item.items() if k not in _RUNTIME_ITEM_KEYS}
+
+
+# Sizes used when no --n-* flag and no --quick is given. Kept here rather than as
+# argparse defaults so --quick can distinguish "unset" from "explicitly set".
+FULL_RUN_DEFAULTS = {
+    "gsm8k": 1000,
+    "math": 0,        # off by default; raise it to close the competition-math gap
+    "mmlu": 0,        # off by default; see the MMLU caution in DATASET_CONFIGS
+    "arc": 400,
+    "logiqa": 300,
+    "strategyqa": 400,
+    "openorca": 0,
+}
+
 TOTAL_TARGET = 6000
 TRAIN_FRAC = 0.90
 SEED = 42
@@ -126,15 +178,37 @@ def load_config(config_path: str, qubo_params_path: str) -> dict:
     with open(qubo_params_path, encoding="utf-8") as f:
         best = yaml.safe_load(f)
 
-    # Override QUBO section with tuned hyperparameters
+    # A params file marked `stale: true` is provenance only -- applying it would
+    # silently overwrite config.yaml with values from a superseded search. The
+    # current file is stale because it was tuned with the gold answer visible and
+    # over a cardinality_penalty range that can only ever select one chain.
+    if best.get("stale", False):
+        print(f"\n[Config] {qubo_params_path} is marked stale -- NOT applying it.")
+        print("         Reason:", str(best.get("notes", "")).strip().splitlines()[0]
+              if best.get("notes") else "superseded search")
+        print("         Using the QUBO settings from", config_path)
+        print("         Regenerate with: python scripts/tune_qubo_params.py --num-questions 300")
+        config["model"]["load_in_4bit"] = False
+        config["pipeline"]["sampling_max_new_tokens"] = min(
+            512, config["pipeline"].get("max_new_tokens", 512)
+        )
+        return config
+
+    # Override QUBO section with tuned hyperparameters.
+    #
+    # Every fallback uses .get() with an explicit default: a config.yaml that
+    # predates the answer-aware/cardinality QUBO terms simply omits those keys,
+    # and direct subscripting made this function raise KeyError on such a file.
+    # The defaults mirror QUBOBuilder's own.
+    qubo_cfg = config.setdefault("qubo", {})
     qubo_overrides = {
-        "penalty_weight":    best.get("penalty_weight",    config["qubo"]["penalty_weight"]),
-        "diversity_bonus":   best.get("diversity_bonus",   config["qubo"]["diversity_bonus"]),
-        "cardinality_penalty": best.get("cardinality_penalty", config["qubo"]["cardinality_penalty"]),
-        "answer_agree_weight": best.get("answer_agree_weight", config["qubo"]["answer_agree_weight"]),
-        "answer_sim_weight":   best.get("answer_sim_weight",   config["qubo"]["answer_sim_weight"]),
+        "penalty_weight":      best.get("penalty_weight",      qubo_cfg.get("penalty_weight", 2.0)),
+        "diversity_bonus":     best.get("diversity_bonus",     qubo_cfg.get("diversity_bonus", 0.5)),
+        "cardinality_penalty": best.get("cardinality_penalty", qubo_cfg.get("cardinality_penalty", 0.1)),
+        "answer_agree_weight": best.get("answer_agree_weight", qubo_cfg.get("answer_agree_weight", 0.4)),
+        "answer_sim_weight":   best.get("answer_sim_weight",   qubo_cfg.get("answer_sim_weight", 0.6)),
     }
-    config["qubo"].update(qubo_overrides)
+    qubo_cfg.update(qubo_overrides)
 
     # H100 settings: bfloat16, no 4-bit
     config["model"]["load_in_4bit"] = False
@@ -151,8 +225,14 @@ def load_config(config_path: str, qubo_params_path: str) -> dict:
     return config
 
 
-def load_model_bfloat16(config: dict, device: str) -> tuple:
-    """Load model in bfloat16 on a single CUDA device."""
+def load_model_bfloat16(config: dict, device: str, adapter_path: str | None = None) -> tuple:
+    """Load model in bfloat16 on a single CUDA device.
+
+    When `adapter_path` is given, the LoRA adapter is merged into the base weights
+    before the model is returned. This is what closes the architecture's feedback
+    loop: round N+1 generates its candidate reasoning paths using the adapter
+    trained in round N, rather than always re-sampling from the base SLM.
+    """
     model_cfg = config["model"]
     model_name = model_cfg["name"]
 
@@ -181,6 +261,14 @@ def load_model_bfloat16(config: dict, device: str) -> tuple:
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
     )
+
+    if adapter_path:
+        print(f"[Model] Merging LoRA adapter: {adapter_path}")
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
+        model = model.merge_and_unload()
+        print("[Model] Adapter merged.")
 
     if use_cuda:
         model = model.to(target_device)
@@ -248,21 +336,89 @@ def load_gsm8k(n: int) -> list:
     return out
 
 
-def load_strategyqa(n: int) -> list:
+def load_math(n: int) -> list:
+    """Hendrycks MATH training problems, disjoint from the MATH-500 eval set.
+
+    NUMERIC FILTER: MATH answers are often symbolic (e.g. "\\frac{\\pi}{2}").
+    Training-data curation scores chains against gold via the verifier's numeric
+    path, which cannot compare symbolic forms, so problems whose answer is not a
+    plain number are skipped here. They would otherwise be scored as wrong
+    regardless of the reasoning, poisoning the curated set.
+    """
     from datasets import load_dataset
-    # voidful/StrategyQA is a parquet-backed mirror. Using streaming=True avoids
-    # disk-space pre-checks (download_and_prepare) on restricted container mounts.
+
+    ds = load_dataset("nlile/hendrycks-MATH-benchmark", split=DATASET_CONFIGS["math"]["split"])
+    rows = list(ds)
+
+    # Drop any problem that also appears in the evaluator's MATH-500 set.
+    def _norm(s: str) -> str:
+        return " ".join(str(s).split())[:200]
+
     try:
-        ds = load_dataset("voidful/StrategyQA", split="train", streaming=True)
-        rows = []
-        for row in ds:
-            rows.append(row)
-            if len(rows) >= max(n * 5, 500):
-                break
+        eval_problems = {
+            _norm(r["problem"])
+            for r in load_dataset("HuggingFaceH4/MATH-500", split="test")
+        }
+        before = len(rows)
+        rows = [r for r in rows if _norm(r["problem"]) not in eval_problems]
+        if before != len(rows):
+            print(f"[MATH] Dropped {before - len(rows)} problem(s) present in MATH-500.")
     except Exception as e:
-        print(f"[StrategyQA] Streaming load failed ({e}), trying standard load...")
-        ds = load_dataset("voidful/StrategyQA", split="train")
-        rows = list(ds)
+        print(f"[MATH] WARNING: could not verify disjointness with MATH-500 ({e}).")
+
+    numeric = re.compile(r"^-?\d+(?:\.\d+)?$")
+    kept = [r for r in rows if numeric.fullmatch(str(r.get("answer", "")).strip())]
+    print(f"[MATH] {len(kept)}/{len(rows)} problems have plain-numeric answers.")
+
+    random.seed(SEED)
+    random.shuffle(kept)
+    kept = kept[:n]
+
+    out = []
+    for row in kept:
+        out.append({
+            "question": row["problem"],
+            "gold": str(row["answer"]).strip(),
+            "task_type": "math",
+            "source": "math",
+            "prompt_question": row["problem"],
+        })
+    print(f"[MATH] Loaded {len(out)} questions")
+    return out
+
+
+def load_strategyqa(n: int) -> list:
+    """StrategyQA training questions from the split the evaluator does not use.
+
+    Source is ChilleD/StrategyQA (train=1603, test=687, disjoint by construction).
+    The evaluator reads the TEST split, so nothing here overlaps it. The previous
+    sources are broken under datasets>=3: wics/strategy-qa is a loading script and
+    voidful/StrategyQA fails schema validation part-way through generation.
+    """
+    from datasets import load_dataset
+
+    split = DATASET_CONFIGS["strategyqa"]["split"]
+    if split != "train":
+        raise ValueError(
+            f"StrategyQA training data must come from the 'train' split, got {split!r}. "
+            "The evaluation suite scores on 'test'."
+        )
+    ds = load_dataset("ChilleD/StrategyQA", split=split)
+    rows = list(ds)
+
+    # The published splits share exactly one question. Drop it so the training
+    # pool is strictly disjoint from what the evaluator scores.
+    try:
+        eval_questions = {
+            str(r["question"]).strip()
+            for r in load_dataset("ChilleD/StrategyQA", split="test")
+        }
+        before = len(rows)
+        rows = [r for r in rows if str(r["question"]).strip() not in eval_questions]
+        if before != len(rows):
+            print(f"[StrategyQA] Dropped {before - len(rows)} question(s) also present in the test split.")
+    except Exception as e:
+        print(f"[StrategyQA] WARNING: could not verify split disjointness ({e}).")
 
     random.seed(SEED)
     random.shuffle(rows)
@@ -303,6 +459,26 @@ def load_arc(n: int) -> list:
         ds = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="train")
         rows = list(ds)
 
+    # ARC's published train and test splits genuinely share a couple of items
+    # (7 match on question stem; 2 are true duplicates once options are compared).
+    # Drop them so the ARC-Challenge eval stays clean.
+    def _ident(r) -> str:
+        ch = r.get("choices", {})
+        texts = " | ".join(map(str, ch.get("text", []))) if isinstance(ch, dict) else ""
+        return " ".join(f"{r['question']} || {texts}".split()).lower()[:200]
+
+    try:
+        eval_ids = {
+            _ident(r)
+            for r in load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")
+        }
+        before = len(rows)
+        rows = [r for r in rows if _ident(r) not in eval_ids]
+        if before != len(rows):
+            print(f"[ARC-Challenge] Dropped {before - len(rows)} item(s) also in the test split.")
+    except Exception as e:
+        print(f"[ARC-Challenge] WARNING: could not verify split disjointness ({e}).")
+
     random.seed(SEED)
     random.shuffle(rows)
     rows = rows[:n]
@@ -328,10 +504,23 @@ def load_arc(n: int) -> list:
 
 
 def load_mmlu(n: int) -> list:
-    """Load MMLU questions (MCQ format, same structure as ARC)."""
+    """Load MMLU questions (MCQ format, same structure as ARC).
+
+    Reads the split from DATASET_CONFIGS rather than hardcoding it. That split is
+    "auxiliary_train"; the evaluation suite scores on "test", so training here
+    must never touch "test" or the reported MMLU number is contaminated.
+    """
     from datasets import load_dataset
+
+    split = DATASET_CONFIGS["mmlu"]["split"]
+    if split == "test":
+        raise ValueError(
+            "Refusing to build MMLU training data from the 'test' split: "
+            "evaluation scores on that same split. Use 'auxiliary_train'."
+        )
+
     try:
-        ds = load_dataset("cais/mmlu", "all", split="test", streaming=True)
+        ds = load_dataset("cais/mmlu", "all", split=split, streaming=True)
         rows = []
         for row in ds:
             rows.append(row)
@@ -340,7 +529,7 @@ def load_mmlu(n: int) -> list:
     except Exception as e:
         print(f"[MMLU] Streaming failed ({e}), trying standard load...")
         try:
-            ds = load_dataset("cais/mmlu", "all", split="test")
+            ds = load_dataset("cais/mmlu", "all", split=split)
             rows = list(ds)
         except Exception as e2:
             print(f"[MMLU] Standard load also failed ({e2}). Skipping MMLU.")
@@ -696,6 +885,10 @@ def process_dataset(
         "scores": [ex["metadata"]["correctness_score"] for ex in examples],
         "filter_reasons": {},
         "greedy_failed_count": sum(1 for ex in examples if ex["metadata"].get("greedy_would_have_failed", False)),
+        # Items the pipeline struggled on, in loader-item shape so a later round
+        # can be pointed straight back at them (see --focus-file). These come
+        # from the TRAIN split only, so re-using them is not contamination.
+        "hard_items": [],
     }
 
     if not items_to_process:
@@ -717,6 +910,8 @@ def process_dataset(
                 agg_stats["filtered"] += 1
                 reason = stats.get("filter_reason", "unknown")
                 agg_stats["filter_reasons"][reason] = agg_stats["filter_reasons"].get(reason, 0) + 1
+                # Produced no usable chain at all -- the hardest possible outcome.
+                agg_stats["hard_items"].append(_strip_runtime_keys(item))
                 continue
 
             # Inject new stats into the item so make_finetuning_example can read it
@@ -729,6 +924,9 @@ def process_dataset(
             agg_stats["scores"].append(stats["top_score"])
             if stats.get("greedy_would_have_failed", False):
                 agg_stats["greedy_failed_count"] += 1
+            # Kept, but the best chain was still weak -- worth revisiting.
+            if stats["top_score"] < HARD_ITEM_SCORE_THRESHOLD:
+                agg_stats["hard_items"].append(_strip_runtime_keys(item))
 
             cache_f.write(json.dumps(ex, ensure_ascii=False) + "\n")
             cache_f.flush()
@@ -857,22 +1055,40 @@ def main():
     parser.add_argument("--output-dir",  default="data",                          help="Output directory")
     parser.add_argument("--resume",      action="store_true",                      help="Resume from cached intermediate files")
     parser.add_argument("--device",      default=None,                             help="Device override (cuda/cpu)")
+    parser.add_argument("--adapter-path", default=None,
+                        help="LoRA adapter to merge before sampling (closes the retrain loop). "
+                             "Falls back to the QUBO_ADAPTER_PATH env var.")
+    parser.add_argument("--focus-file", default=None,
+                        help="JSON file of hard questions from a previous round "
+                             "(hard_questions.json). They are added to this round's pool "
+                             "so curation concentrates on what the model struggles with.")
+    parser.add_argument("--focus-repeat", type=int, default=2,
+                        help="How many times each focus question is added (default: 2)")
     # ── Fast-run size overrides ───────────────────────────────────────────────
     parser.add_argument("--quick",       action="store_true",
                         help="Use reduced dataset sizes for a fast run "
                              "(gsm8k=300, mmlu=200, arc=150, logiqa=100, strategyqa=100, openorca=0). "
                              "Individual --n-* flags override this.")
-    parser.add_argument("--n-gsm8k",       type=int, default=1000, help="# GSM8K questions  (default: 1000)")
-    parser.add_argument("--n-mmlu",        type=int, default=0, help="# MMLU questions (default: 0)")
-    parser.add_argument("--n-arc",         type=int, default=400, help="# ARC-Challenge questions (default: 400)")
-    parser.add_argument("--n-logiqa",      type=int, default=300, help="# LogiQA questions  (default: 300)")
-    parser.add_argument("--n-strategyqa",  type=int, default=400, help="# StrategyQA questions (default: 400)")
-    parser.add_argument("--n-openorca",    type=int, default=0, help="# OpenOrca examples  (default: 0, disabled)")
+    # NOTE: these all default to None on purpose so --quick can tell "unset" from
+    # "explicitly requested". FULL_RUN_DEFAULTS supplies the real defaults below.
+    parser.add_argument("--n-gsm8k",       type=int, default=None, help="# GSM8K questions  (default: 1000)")
+    parser.add_argument("--n-math",        type=int, default=None, help="# MATH (Hendrycks) problems (default: 0)")
+    parser.add_argument("--n-mmlu",        type=int, default=None, help="# MMLU questions (default: 0, see MMLU note)")
+    parser.add_argument("--n-arc",         type=int, default=None, help="# ARC-Challenge questions (default: 400)")
+    parser.add_argument("--n-logiqa",      type=int, default=None, help="# LogiQA questions  (default: 300)")
+    parser.add_argument("--n-strategyqa",  type=int, default=None, help="# StrategyQA questions (default: 400)")
+    parser.add_argument("--n-openorca",    type=int, default=None, help="# OpenOrca examples  (default: 0, disabled)")
     args = parser.parse_args()
 
     # ── Apply --quick defaults, then let explicit --n-* override ─────────────
+    #
+    # The "is None" test below only works because every --n-* argument defaults
+    # to None (see parse_args). They previously carried numeric defaults, so the
+    # test was never true and --quick silently did nothing while printing that it
+    # had -- a "quick" run sampled 2100 questions instead of 850.
     QUICK_DEFAULTS = {
-        "gsm8k": 300, "mmlu": 200, "arc": 150, "logiqa": 100, "strategyqa": 100, "openorca": 0
+        "gsm8k": 300, "math": 200, "mmlu": 200, "arc": 150,
+        "logiqa": 100, "strategyqa": 100, "openorca": 0
     }
     if args.quick:
         for ds, val in QUICK_DEFAULTS.items():
@@ -882,8 +1098,14 @@ def main():
         for ds in QUICK_DEFAULTS:
             print(f"  {ds}: {getattr(args, f'n_{ds}')}")
 
+    # Anything still unset falls back to the full-run defaults.
+    for ds, full_default in FULL_RUN_DEFAULTS.items():
+        if getattr(args, f"n_{ds}", None) is None:
+            setattr(args, f"n_{ds}", full_default)
+
     # Apply overrides to DATASET_CONFIGS and OPENORCA_CONFIG in-place
-    _ds_map = {"gsm8k": "gsm8k", "mmlu": "mmlu", "arc": "arc", "logiqa": "logiqa", "strategyqa": "strategyqa"}
+    _ds_map = {"gsm8k": "gsm8k", "math": "math", "mmlu": "mmlu", "arc": "arc",
+               "logiqa": "logiqa", "strategyqa": "strategyqa"}
     for arg_name, cfg_key in _ds_map.items():
         override_n = getattr(args, f"n_{arg_name}", None)
         if override_n is not None:
@@ -914,7 +1136,8 @@ def main():
     save_temp_config(config, tmp_config)
 
     # ── Load model once and share across pipeline components ─────────────────
-    shared_model, shared_tokenizer = load_model_bfloat16(config, device)
+    adapter_path = args.adapter_path or os.environ.get("QUBO_ADAPTER_PATH") or None
+    shared_model, shared_tokenizer = load_model_bfloat16(config, device, adapter_path)
 
     # ── Initialise pipeline components ───────────────────────────────────────
     print("\n[Init] Initialising pipeline components ...")
@@ -930,12 +1153,27 @@ def main():
     solver       = SimulatedAnnealingSolver(config_path=tmp_config)
     print("[Init] All pipeline components ready.")
 
+    # ── Load focus questions from a previous round (optional) ────────────────
+    focus_items: dict[str, list] = {}
+    if args.focus_file:
+        focus_path = Path(args.focus_file)
+        if focus_path.exists():
+            with open(focus_path, encoding="utf-8") as f:
+                for item in json.load(f):
+                    focus_items.setdefault(item.get("source", ""), []).append(item)
+            total_focus = sum(len(v) for v in focus_items.values())
+            print(f"[Focus] Loaded {total_focus} hard questions from {focus_path}: "
+                  + ", ".join(f"{k}={len(v)}" for k, v in sorted(focus_items.items())))
+        else:
+            print(f"[Focus] WARNING: {focus_path} not found; continuing without focus questions.")
+
     # ── Process QUBO datasets (1-4) ──────────────────────────────────────────
     all_examples = {}
     all_stats = {}
 
     dataset_loaders = {
         "gsm8k":      lambda: load_gsm8k(DATASET_CONFIGS["gsm8k"]["n"]),
+        "math":       lambda: load_math(DATASET_CONFIGS["math"]["n"]),
         "mmlu":       lambda: load_mmlu(DATASET_CONFIGS["mmlu"]["n"]),
         "arc":        lambda: load_arc(DATASET_CONFIGS["arc"]["n"]),
         "strategyqa": lambda: load_strategyqa(DATASET_CONFIGS["strategyqa"]["n"]),
@@ -966,6 +1204,17 @@ def main():
         print(f" Processing: {ds_name.upper()}")
         print(f"{'='*55}")
         items = loader()
+
+        # Failure-targeted curriculum: prepend the questions this dataset
+        # struggled on last round so they get fresh attempts from the improved
+        # model. focus_items is keyed by source, and only ever holds TRAIN-split
+        # questions, so this cannot contaminate the evaluation benchmarks.
+        extra = focus_items.get(ds_name, [])
+        if extra:
+            repeated = extra * max(1, args.focus_repeat)
+            items = repeated + items
+            print(f"[{ds_name}] Focus: {len(extra)} hard questions x{args.focus_repeat} "
+                  f"prepended (pool now {len(items)}).")
 
         examples, stats = process_dataset(
             ds_name, items, sampler, verifier, qubo_builder, solver,
@@ -1050,6 +1299,17 @@ def main():
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(stats_out, f, indent=2, ensure_ascii=False)
     print(f"  Wrote stats -> {stats_path}")
+
+    # hard_questions.json -- TRAIN-split questions this round struggled on, for a
+    # later round to revisit via --focus-file.
+    hard_items = []
+    for ds_name, s in all_stats.items():
+        hard_items.extend(s.get("hard_items", []))
+    hard_path = output_dir / "hard_questions.json"
+    with open(hard_path, "w", encoding="utf-8") as f:
+        json.dump(hard_items, f, indent=2, ensure_ascii=False)
+    stats_out["hard_questions"] = len(hard_items)
+    print(f"  Wrote {len(hard_items)} hard questions -> {hard_path}")
 
     # ── Summary table ─────────────────────────────────────────────────────────
     print_summary_table(all_stats, final_train, final_val)

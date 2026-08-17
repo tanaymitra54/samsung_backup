@@ -16,11 +16,15 @@ Runs an 81-combination grid search over QUBO parameters on the first
 300 questions of GSM8K (test split) and saves the best configuration.
 
 PARAMETER GRID (81 total combinations):
-    penalty_weight:       [0.5, 1.0, 1.5]
-    diversity_bonus:      [0.1, 0.2, 0.3]
-    cardinality_penalty:  [0.05, 0.1, 0.2]
-    answer_agree_weight:  [0.3, 0.4, 0.5]
+    penalty_weight:       [0.5, 1.0, 2.0]
+    diversity_bonus:      [0.1, 0.3, 0.5]
+    cardinality_penalty:  [0.2, 0.6, 1.2]
+    answer_agree_weight:  [0.1, 0.3, 0.5]
     answer_sim_weight:    1.0 - answer_agree_weight  (always sums to 1.0)
+
+    See the _CP_VALUES comment for why the ranges were widened: the previous grid
+    could not select more than one chain, so the multi-chain CoT scaffold that the
+    method depends on never engaged.
 
 EFFICIENCY:
     • InferencePipeline is instantiated once (loads the LLM internally).
@@ -92,10 +96,26 @@ from pipeline.verifier import ReasonVerifier
 
 # Fixed-order lists — itertools.product iterates these in declaration order,
 # guaranteeing a deterministic, reproducible combo sequence across all runs.
-_PW_VALUES   = [0.5, 1.0, 1.5]          # penalty_weight
-_DB_VALUES   = [0.1, 0.2, 0.3]          # diversity_bonus
-_CP_VALUES   = [0.05, 0.1, 0.2]         # cardinality_penalty
-_AAW_VALUES  = [0.3, 0.4, 0.5]          # answer_agree_weight
+#
+# GRID WIDENED. The previous ranges could not produce a working subset:
+# cardinality_penalty topped out at 0.2 while penalty_weight went to 1.5, so the
+# pairwise redundancy penalty always swamped the soft k-constraint and the solver
+# selected ONE chain regardless of subset_size. Measured on a realistic 12-chain
+# pool (mean pairwise cosine 0.51) with the shipped config, every combination in
+# the old grid yields a 1-chain scaffold -- i.e. the multi-chain CoT premise of
+# the method never actually engaged.
+#
+# cardinality_penalty must be within roughly an order of magnitude of
+# penalty_weight for the k-constraint to bind, so its range now overlaps it.
+# answer_agree_weight is also allowed to go lower: gold-free scoring REWARDS
+# cross-chain consensus on the diagonal, so penalising answer agreement off the
+# diagonal now works against the quality signal rather than complementing it.
+#
+# Still 3^4 = 81 combinations, so runtime is unchanged.
+_PW_VALUES   = [0.5, 1.0, 2.0]          # penalty_weight
+_DB_VALUES   = [0.1, 0.3, 0.5]          # diversity_bonus
+_CP_VALUES   = [0.2, 0.6, 1.2]          # cardinality_penalty
+_AAW_VALUES  = [0.1, 0.3, 0.5]          # answer_agree_weight
 # answer_sim_weight = 1.0 - answer_agree_weight
 
 # Low-quality-question threshold: if EVERY chain for a question scores below
@@ -138,6 +158,21 @@ def parse_args() -> argparse.Namespace:
         "--best-config-path",
         default="config/best_qubo_params.yaml",
         help="Path to write the best hyperparameter configuration.",
+    )
+    parser.add_argument(
+        "--oracle-scoring",
+        action="store_true",
+        help="ABLATION ONLY: let the verifier see the gold answer while scoring "
+             "candidate chains. The winning combination then reflects what best "
+             "exploits an answer key the deployed pipeline never has. The default "
+             "(gold-free) matches how run_all_benchmarks.py now evaluates.",
+    )
+    parser.add_argument(
+        "--keep-exclusions",
+        action="store_true",
+        help="Rank combinations by accuracy over the reduced denominator that drops "
+             "questions where every chain scored poorly. Off by default: those are "
+             "precisely the hard questions, and dropping them inflates the score.",
     )
     return parser.parse_args()
 
@@ -254,6 +289,7 @@ def cache_and_score_all(
     sampler: DiverseSampler,
     verifier: ReasonVerifier,
     cache_file: Optional[Path] = None,
+    oracle_scoring: bool = False,
 ) -> tuple[list[list[dict]], set[int]]:
     """Sample AND score all questions once upfront, saving/loading from disk cache.
 
@@ -287,9 +323,14 @@ def cache_and_score_all(
         # Step 1: Sample diverse chains
         chains = sampler.sample(ex["question"], task_type="math")
 
-        # Step 2: Score immediately (verifier params are fixed for all combos)
-        gold_str = str(ex["gold"])
-        verifier.score_batch(chains, task_type="math", gold=gold_str,
+        # Step 2: Score immediately (verifier params are fixed for all combos).
+        #
+        # Gold is withheld by default so the search optimises the parameters that
+        # work at DEPLOYMENT. Passing gold here makes the QUBO diagonal encode
+        # "already has the right answer", so the winning combination would be the
+        # one that best exploits an answer key the real pipeline never has.
+        scoring_gold = str(ex["gold"]) if oracle_scoring else None
+        verifier.score_batch(chains, task_type="math", gold=scoring_gold,
                              question=ex["question"])
 
         cached_scored_chains.append(chains)
@@ -370,6 +411,8 @@ def run_grid_search(
     inf_pipeline: InferencePipeline,
     already_done: set[str],
     output_path: Path,
+    keep_exclusions: bool = False,
+    oracle_scoring: bool = False,
 ) -> list[dict]:
     """Run the grid search and return the full results list.
 
@@ -461,7 +504,14 @@ def run_grid_search(
                 )
                 # Counts as incorrect (not blank — it's a pipeline failure)
 
-        accuracy = correct / effective_n if effective_n > 0 else 0.0
+        # Two denominators:
+        #   accuracy_excluded — over questions that had at least one decent chain
+        #   accuracy_all      — over EVERY question asked (the honest figure)
+        # Excluded questions are the ones the model handled worst, so removing them
+        # inflates the score. accuracy_all is the default ranking key.
+        accuracy_excluded = correct / effective_n if effective_n > 0 else 0.0
+        accuracy_all = correct / len(examples) if examples else 0.0
+        accuracy = accuracy_excluded if keep_exclusions else accuracy_all
 
         print(
             f"[Combo {combo_idx:2d}/{total_combos}] "
@@ -470,7 +520,8 @@ def run_grid_search(
             f"cp={combo['cardinality_penalty']} "
             f"aaw={combo['answer_agree_weight']} "
             f"-> acc={accuracy:.4f}  "
-            f"({correct}/{effective_n}, blank={blank})"
+            f"(all={correct}/{len(examples)}, "
+            f"excl-denom={correct}/{effective_n}, blank={blank})"
         )
 
         result = {
@@ -482,10 +533,14 @@ def run_grid_search(
             "answer_agree_weight": combo["answer_agree_weight"],
             "answer_sim_weight":   combo["answer_sim_weight"],
             "accuracy":            accuracy,
+            "accuracy_all":        accuracy_all,
+            "accuracy_excluded":   accuracy_excluded,
             "correct":             correct,
             "blank":               blank,
             "effective_n":         effective_n,
+            "total_n":             len(examples),
             "excluded":            len(excluded_indices),
+            "oracle_scoring":      oracle_scoring,
         }
         all_results.append(result)
         already_done.add(key)
@@ -502,20 +557,43 @@ def run_grid_search(
 # ─── OUTPUT HELPERS ─────────────────────────────────────────────────────────────
 # =============================================================================
 
-def save_best_config(best: dict, path: Path) -> None:
-    """Write the best hyperparameter combination to a YAML file."""
+def save_best_config(best: dict, path: Path, n_questions: int = 0,
+                     oracle_scoring: bool = False) -> None:
+    """Write the best hyperparameter combination to a YAML file.
+
+    `stale` is written explicitly. load_config() refuses to apply a params file
+    marked stale, which is how the superseded (leaky, unreachable-grid) result is
+    kept from silently overriding config.yaml. A run scored WITH the oracle is
+    marked stale for the same reason: its winner reflects answer-key exploitation
+    rather than deployable behaviour.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    se = (0.25 / n_questions) ** 0.5 if n_questions else None
     config_out = {
+        "stale": bool(oracle_scoring),
         "penalty_weight":      best["penalty_weight"],
         "diversity_bonus":     best["diversity_bonus"],
         "cardinality_penalty": best["cardinality_penalty"],
         "answer_agree_weight": best["answer_agree_weight"],
         "answer_sim_weight":   best["answer_sim_weight"],
         "validation_accuracy": round(best["accuracy"], 6),
+        "n_questions":         n_questions,
+        "scoring":             "oracle" if oracle_scoring else "gold-free",
+        "notes": (
+            f"Grid search over {n_questions} questions, "
+            f"{'ORACLE (answer key visible -- ablation only)' if oracle_scoring else 'gold-free'} scoring. "
+            + (f"Accuracy standard error about +/-{se * 100:.1f} points. " if se else "")
+            + ("Marked stale: oracle-scored results must not drive the deployed config."
+               if oracle_scoring else
+               "Verify the selected cardinality_penalty yields a multi-chain subset; "
+               "run_all_benchmarks.py warns if the mean drops below 2.")
+        ),
     }
     with open(path, "w") as f:
         yaml.dump(config_out, f, default_flow_style=False, sort_keys=False)
     print(f"\n[output] Best config saved -> {path}")
+    if oracle_scoring:
+        print("[output] Marked stale: oracle scoring was used, so this must not be applied.")
 
 
 def print_top5(all_results: list[dict]) -> None:
@@ -647,9 +725,18 @@ def main() -> None:
     print("[init] All components ready.")
 
     # ── Pre-cache: sample + score all questions, build exclusion set ───────────
-    cache_file = Path(args.output_dir) / f"cached_chains_{args.num_questions}q.json"
+    #
+    # The scoring mode is part of the cache filename. Chains scored WITH gold have
+    # completely different correctness_scores from chains scored without it, so a
+    # cache built under one mode must never be reused under the other.
+    mode_tag = "oracle" if args.oracle_scoring else "goldfree"
+    cache_file = (
+        Path(args.output_dir) / f"cached_chains_{args.num_questions}q_{mode_tag}.json"
+    )
     cached_scored_chains, excluded_indices = cache_and_score_all(
-        examples, sampler, verifier, cache_file=cache_file
+        examples, sampler, verifier,
+        cache_file=cache_file,
+        oracle_scoring=args.oracle_scoring,
     )
 
     # ── Run grid search ────────────────────────────────────────────────────────
@@ -671,6 +758,8 @@ def main() -> None:
         inf_pipeline=inf_pipeline,
         already_done=already_done,
         output_path=output_path,
+        keep_exclusions=args.keep_exclusions,
+        oracle_scoring=args.oracle_scoring,
     )
 
     elapsed_grid = time.time() - t_grid_start
@@ -688,7 +777,9 @@ def main() -> None:
         return
 
     best = max(all_results, key=lambda r: r["accuracy"])
-    save_best_config(best, best_config_path)
+    save_best_config(best, best_config_path,
+                     n_questions=len(examples),
+                     oracle_scoring=args.oracle_scoring)
 
     # ── Print top-5 ────────────────────────────────────────────────────────────
     print_top5(all_results)

@@ -110,6 +110,9 @@ def parse_args():
                         help="Existing LoRA adapter path (used when --skip-finetune)")
     parser.add_argument("--resume-datagen", action="store_true",
                         help="Pass --resume to generate_training_data.py (continue interrupted run)")
+    parser.add_argument("--resume-finetune", action="store_true",
+                        help="Resume SFT from the newest per-epoch checkpoint in the run "
+                             "directory instead of restarting training from scratch")
 
     # ── Training hyper-params ─────────────────────────────────────────────────
     parser.add_argument("--epochs",     type=int,   default=5,    help="SFT epochs (default: 5)")
@@ -215,6 +218,7 @@ LR          = {args.lr}
 BATCH_SIZE  = {args.batch_size}
 LORA_RANK   = {args.lora_rank}
 LORA_ALPHA  = {lora_alpha}
+RESUME      = {bool(args.resume_finetune)}
 QUALITY_THRESHOLD = 0.70   # Only train on QUBO examples with high correctness score
 
 with open(CONFIG_PATH) as f:
@@ -461,7 +465,24 @@ trainer = CustomAccTrainer(
     tokenizer=tokenizer,
     **_extra,
 )
-trainer.train()
+
+# Resume from the newest per-epoch checkpoint in run_dir if one is present.
+# save_strategy="epoch" already writes them; without this a crash at epoch 4 of 5
+# would restart from zero.
+_resume_ckpt = None
+if RESUME:
+    try:
+        from transformers.trainer_utils import get_last_checkpoint
+        if os.path.isdir(run_dir):
+            _resume_ckpt = get_last_checkpoint(run_dir)
+    except Exception as _e:
+        print(f"[SFT] Could not look for a checkpoint to resume ({{_e}}).")
+    if _resume_ckpt:
+        print(f"[SFT] Resuming from checkpoint: {{_resume_ckpt}}")
+    else:
+        print("[SFT] No existing checkpoint found; starting fresh.")
+
+trainer.train(resume_from_checkpoint=_resume_ckpt)
 
 # Check trending upward
 accs = trainer.epoch_accuracies
@@ -511,6 +532,70 @@ def stage_finetune(args, data_dir: Path) -> str | None:
 
 # ── Stage 3: Benchmark evaluation ────────────────────────────────────────────
 
+def _read_condition_accuracy(out_dir: Path, label: str, benchmark: str) -> dict:
+    """Accuracy per decode mode for one condition/benchmark, from the per-question JSONL.
+
+    run_all_benchmarks.py writes '<label>_<benchmark>_results.jsonl' with one row per
+    question carrying boolean correct_greedy / correct_cot / correct_qubo fields.
+    Returns {} when the file is absent (condition was skipped or the run failed).
+    """
+    path = out_dir / f"{label}_{benchmark}_results.jsonl"
+    if not path.exists():
+        return {}
+
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    if not rows:
+        return {}
+
+    accuracy = {"n": len(rows)}
+    for mode in ("greedy", "cot", "qubo"):
+        scored = [r for r in rows if r.get(f"correct_{mode}") is not None]
+        accuracy[mode] = (
+            sum(1 for r in scored if r[f"correct_{mode}"]) / len(scored) if scored else None
+        )
+    return accuracy
+
+
+def _print_comparison(out_dir: Path, benchmarks: list[str]):
+    """Print a base vs fine-tuned accuracy table for each benchmark and decode mode."""
+    out_dir = Path(out_dir)
+
+    print("\n" + "=" * 75)
+    print(f"  {'Benchmark':<12} | {'Mode':<8} | {'Base':>8} | {'Fine-tuned':>10} | {'Delta':>8}")
+    print("-" * 75)
+
+    printed_any = False
+    for bm in benchmarks:
+        base_acc = _read_condition_accuracy(out_dir, "base", bm)
+        sft_acc = _read_condition_accuracy(out_dir, "sft", bm)
+        if not base_acc and not sft_acc:
+            print(f"  {bm:<12} | {'-':<8} | {'N/A':>8} | {'N/A':>10} | {'N/A':>8}")
+            continue
+
+        for mode in ("greedy", "cot", "qubo"):
+            b_val = base_acc.get(mode)
+            f_val = sft_acc.get(mode)
+            b_s = f"{b_val:.2%}" if b_val is not None else "N/A"
+            f_s = f"{f_val:.2%}" if f_val is not None else "N/A"
+            d_s = f"{f_val - b_val:+.2%}" if (b_val is not None and f_val is not None) else "N/A"
+            print(f"  {bm:<12} | {mode:<8} | {b_s:>8} | {f_s:>10} | {d_s:>8}")
+            printed_any = True
+
+    print("=" * 75)
+    if not printed_any:
+        print("  No result files found -- check that the eval stage actually ran.")
+    print(f"\nFull results saved to: {out_dir}")
+
+
 def stage_eval(args, adapter_path: str | None):
     """Run benchmarks on base model then fine-tuned model and print comparison."""
     if args.skip_eval:
@@ -548,38 +633,7 @@ def stage_eval(args, adapter_path: str | None):
     if "QUBO_ADAPTER_PATH" in os.environ:
         del os.environ["QUBO_ADAPTER_PATH"]
 
-    _print_comparison(out_dir)
-
-
-    # Note: _print_comparison logic is currently tailored to the old dir structure
-    # and might need to be rewritten later, but the diagnostic script will
-    # handle the final reporting table for this new plan.
-    print("\n[Eval] Check results/eval/ for the JSONL output files.")
-
-    print("\n" + "=" * 75)
-    print(f"  {'Benchmark':<12} | {'Mode':<8} | {'Base':>8} | {'Fine-tuned':>10} | {'Delta':>8}")
-    print("-" * 75)
-
-    all_bms = sorted(set(k for k in base_data if isinstance(base_data[k], dict)) | 
-                     set(k for k in ft_data if isinstance(ft_data[k], dict)))
-
-    for bm in all_bms:
-        b_item = base_data.get(bm, {})
-        f_item = ft_data.get(bm, {})
-        
-        b_accs = b_item.get("accuracy", {}) if isinstance(b_item, dict) else {}
-        f_accs = f_item.get("accuracy", {}) if isinstance(f_item, dict) else {}
-
-        for mode in ["greedy", "cot", "qubo"]:
-            b_val = b_accs.get(mode)
-            f_val = f_accs.get(mode)
-            b_s = f"{b_val:.2%}" if b_val is not None else "N/A"
-            f_s = f"{f_val:.2%}" if f_val is not None else "N/A"
-            d_s = f"{f_val - b_val:+.2%}" if (b_val is not None and f_val is not None) else "N/A"
-            print(f"  {bm:<12} | {mode:<8} | {b_s:>8} | {f_s:>10} | {d_s:>8}")
-
-    print("=" * 75)
-    print(f"\nFull results saved to: {out_dir}")
+    _print_comparison(out_dir, args.benchmarks)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

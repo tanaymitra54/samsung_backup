@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import random
+import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -45,6 +46,10 @@ from evaluation.answer_utils import (
     extract_gsm8k_gold,
     extract_predicted_answer,
     is_correct_prediction,
+)
+from evaluation.answer_utils_v2 import (
+    check_repetition,
+    extract_predicted_answer_v2,
 )
 from pipeline.device_utils import resolve_device
 from pipeline.inference import InferencePipeline
@@ -112,12 +117,26 @@ def parse_args():
         action="store_true",
         help="Save first 5 raw model outputs for debugging",
     )
+    parser.add_argument(
+        "--oracle-selection",
+        action="store_true",
+        help="ABLATION ONLY: let the verifier see the gold answer when scoring "
+             "candidate chains. This leaks the answer key into QUBO selection and "
+             "produces accuracies that are NOT reproducible at deployment. Use it "
+             "to report the oracle ceiling alongside the real number, never alone.",
+    )
     return parser.parse_args()
 
 
 TASK_TYPE = {
     "gsm8k": "math",
-    "bbh": "math",
+    # BBH was typed "math", but its golds are ~63% parenthesised MCQ letters plus
+    # booleans and word-sorting strings; only a couple of its 27 subtasks are
+    # arithmetic. Scoring it as math meant chain quality came from arithmetic
+    # consistency on traces that contain no arithmetic, and consensus compared
+    # extracted numbers where there are none. "commonsense" routes it to the
+    # NLI/coverage/structure scorer and to string-based consensus.
+    "bbh": "commonsense",
     "strategyqa": "commonsense",
     "mmlu": "commonsense",
     "arc_challenge": "commonsense",
@@ -138,34 +157,105 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def extract_mcq_choice(text: str) -> str:
+# Single letters that are also ordinary English words. Appearing bare in prose,
+# these say nothing about which option was chosen -- "the shape is a triangle"
+# is not a vote for choice A, and "I believe" is not a vote for choice I.
+# They are only accepted when delimited, explicitly tagged, or the whole answer.
+_AMBIGUOUS_BARE_LETTERS = {"A", "I"}
+
+_MCQ_LETTERS = "A-J"
+
+
+def extract_mcq_choice(text: str, question: str = "") -> str:
+    """Extract the selected multiple-choice letter, abstaining when ambiguous.
+
+    Returns "" if no choice can be identified with confidence.
+
+    Runs answer_utils_v2's extractor first when a `question` is available. That
+    stage adds two things this module cannot do alone:
+      * VALUE MATCHING -- a model that answers with the option's text ("The answer
+        is 4") instead of its letter is mapped back to the letter by comparing
+        against the options parsed out of the question.
+      * \\boxed{}, [A] and trailing "(A)" forms.
+    It also rejects degenerate repetition loops outright.
+
+    If that stage yields no single letter, the staged patterns below run as a
+    fallback, ending in an abstention rather than a guess.
+
+    ABSTAINING IS DELIBERATE. The previous implementation ended with "return the
+    last A-J letter found anywhere in the text", which fired on the article "a"
+    and the pronoun "I" -- so any prose answer without an explicit tag was scored
+    as choice A. That both added noise and biased results toward A. Returning ""
+    scores the item wrong, which is the honest outcome when the model did not
+    state a choice we can read.
+
+    Patterns are tried strongest-first; each is anchored on a delimiter or an
+    explicit answer word so ordinary prose cannot trigger it.
+    """
     if not text:
         return ""
-    upper = text.strip().upper()
-    import re
 
-    # 1. Look for explicit "ANSWER: X" or "ANSWER IS X" pattern
-    tagged = re.search(r"ANSWER\s*[:\-]?\s*([A-J])\b", upper)
+    # Degenerate repetition means the model never settled on an answer.
+    if check_repetition(text):
+        return ""
+
+    # Stage 0: answer_utils_v2 (explicit tags, boxed/bracket forms, value matching).
+    try:
+        v2 = extract_predicted_answer_v2(text, is_mcq=True, question=question)
+    except Exception:
+        v2 = None
+    if v2 and re.fullmatch(rf"[{_MCQ_LETTERS}]", str(v2).strip().upper()):
+        return str(v2).strip().upper()
+
+    upper = text.strip().upper()
+    cls = f"[{_MCQ_LETTERS}]"
+
+    # 0. The whole response is just a letter, optionally decorated: "C", "(C)", "**C**", "C."
+    #    This is the common shape of a greedy MCQ answer and is unambiguous, so
+    #    ambiguous-letter filtering does not apply.
+    solo = re.fullmatch(rf"[\(\[\*\s]*({cls})[\)\]\*\.\s]*", upper)
+    if solo:
+        return solo.group(1)
+
+    # 1. Explicit answer tag: "ANSWER: C", "THE ANSWER IS (C)", "FINAL ANSWER - C"
+    tagged = re.search(rf"\bANSWER\b\s*(?:IS|=|:|-)?\s*[\(\[\*]*({cls})\b", upper)
     if tagged:
         return tagged.group(1)
-    # 2. Look for "CORRECT ANSWER IS X" or "OPTION X IS CORRECT"
+
+    # 2. "THE CORRECT ANSWER IS X" / "RIGHT OPTION: X"
     explicit = re.search(
-        r"(?:CORRECT|RIGHT)\s+(?:ANSWER|CHOICE|OPTION)?\s*(?:IS\s+|:\s*)?([A-J])\b", upper
+        rf"\b(?:CORRECT|RIGHT)\s+(?:ANSWER|CHOICE|OPTION)?\s*(?:IS\s+|:\s*)?[\(\[\*]*({cls})\b",
+        upper,
     )
     if explicit:
         return explicit.group(1)
-    # 3. Look for "OPTION X" or "CHOICE X" in conclusion (last 300 chars)
-    last_chunk = upper[-300:] if len(upper) > 300 else upper
-    last_option = re.search(r"(?:OPTION|CHOICE)\s*([A-J])\b", last_chunk)
-    if last_option:
-        return last_option.group(1)
-    # 4. Search for standalone letter in the last 200 characters (where final decision is stated)
-    standalone_end = re.findall(r"\b([A-J])\b", last_chunk)
-    if standalone_end:
-        return standalone_end[-1]
-    # 5. Fallback: last single letter found anywhere in the text
-    all_letters = re.findall(r"\b([A-J])\b", upper)
-    return all_letters[-1] if all_letters else ""
+
+    # Everything below only inspects the conclusion, where the decision is stated.
+    tail = upper[-300:] if len(upper) > 300 else upper
+
+    # 3. "OPTION C" / "CHOICE C"
+    labelled = re.findall(rf"\b(?:OPTION|CHOICE)\s*[\(\[\*]*({cls})\b", tail)
+    if labelled:
+        return labelled[-1]
+
+    # 4. Delimited letter: "(C)", "[C]", "**C**", or "C)" at a token boundary.
+    #    A delimiter means the letter was written as a label, not as a word.
+    delimited = re.findall(
+        rf"\(\s*({cls})\s*\)|\[\s*({cls})\s*\]|\*\*\s*({cls})\s*\*\*|(?:^|\s)({cls})\)",
+        tail,
+    )
+    flat = [g for groups in delimited for g in groups if g]
+    if flat:
+        return flat[-1]
+
+    # 5. Bare standalone letter, excluding the ones that are English words.
+    bare = [c for c in re.findall(rf"\b({cls})\b", tail)
+            if c not in _AMBIGUOUS_BARE_LETTERS]
+    if bare:
+        return bare[-1]
+
+    # 6. No identifiable choice -- abstain rather than guess.
+    return ""
 
 
 def _mcq_prompt(question: str) -> str:
@@ -235,17 +325,65 @@ def run_qubo_pipeline(
     question: str,
     task_type: str = "math",
     gold: str = "",
+    oracle_selection: bool = False,
 ) -> str:
-    samples = sampler.sample(question)
+    samples = sampler.sample(question, task_type=task_type)
     if not samples:
         return ""
-    samples = verifier.score_batch(samples, task_type=task_type, gold=gold)
+
+    # The gold answer is deliberately WITHHELD from chain scoring here.
+    #
+    # verify_math() gives answer_match a 0.63 weight, so feeding it the gold
+    # answer lets the QUBO diagonal encode "this chain already has the right
+    # answer" — the solver then selects chains using the answer key and the
+    # reported accuracy is not reproducible at deployment. The greedy and CoT
+    # baselines get no such help, so it also makes the comparison unfair.
+    #
+    # With gold=None the verifier falls back to gold-free scoring: arithmetic
+    # consistency plus cross-chain consensus (see ReasonVerifier.score_batch).
+    #
+    # oracle_selection=True restores the old behaviour for ABLATION ONLY, so the
+    # oracle-selected ceiling can be reported alongside the deployable number.
+    # Never enable it for a headline result.
+    scoring_gold = gold if oracle_selection else None
+    samples = verifier.score_batch(
+        samples, task_type=task_type, gold=scoring_gold, question=question
+    )
     Q, qubo_var_indices = qubo_builder.build_qubo(samples)
     state, _ = solver.solve(Q)
     selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
     if not selected_indices:
         selected_indices = list(range(min(inference.subset_size, len(samples))))
+
+    # Record how many chains actually reached the CoT scaffold. If this sits at 1
+    # while subset_size is 6, the QUBO is collapsing to a single chain and the
+    # multi-chain scaffold the method depends on is not happening -- usually
+    # cardinality_penalty being far too small relative to penalty_weight.
+    _SELECTION_SIZES.append(len(selected_indices))
+
     return inference.run(question, selected_indices, samples)
+
+
+# Running tally of QUBO subset sizes, summarised at the end of a benchmark run.
+_SELECTION_SIZES: list[int] = []
+
+
+def report_selection_sizes(subset_size: int):
+    """Warn if the QUBO is not producing multi-chain scaffolds."""
+    if not _SELECTION_SIZES:
+        return
+    mean_sel = sum(_SELECTION_SIZES) / len(_SELECTION_SIZES)
+    print(
+        f"\n[QUBO] Selected {mean_sel:.2f} chains per question on average "
+        f"(target subset_size={subset_size}, n={len(_SELECTION_SIZES)})."
+    )
+    if mean_sel < 2.0 and subset_size >= 3:
+        print(
+            "[QUBO] WARNING: the solver is collapsing to a near-single-chain scaffold, "
+            "so the final prompt carries almost no reasoning diversity. Raise "
+            "qubo.cardinality_penalty (try 0.5-1.5) or lower qubo.penalty_weight, "
+            "then re-run scripts/tune_qubo_params.py."
+        )
 
 
 def extract_answer(pred: str, benchmark: str) -> str:
@@ -260,18 +398,110 @@ def extract_answer(pred: str, benchmark: str) -> str:
     return pred.strip()
 
 
-def is_correct(pred: str, gold: str, benchmark: str) -> bool:
+# Markers after which a model states its conclusion. Grading looks only at the
+# text following the LAST marker, so a gold token that merely appears mid-working
+# ("False and True = False, therefore True") cannot be mistaken for the answer.
+_FINAL_MARKERS = re.compile(
+    r"####|FINAL\s+ANSWER|THE\s+ANSWER\s+IS|\bANSWER\s*[:=]|\bTHEREFORE\b|\bTHUS\b|\bHENCE\b|\bSO\s+THE\s+ANSWER\b",
+    re.IGNORECASE,
+)
+
+_BOOLEAN_GOLDS = {"yes", "no", "true", "false", "valid", "invalid"}
+
+# Polarity words that mean the same verdict. A model asked a yes/no question may
+# answer "True", and StrategyQA's gold is stored as a bool, so the two phrasings
+# must compare equal. "valid"/"invalid" are BBH's formal_fallacies phrasing.
+_POLARITY_CANON = {
+    "yes": "+", "true": "+", "valid": "+",
+    "no": "-", "false": "-", "invalid": "-",
+}
+
+
+def _conclusion_span(pred: str) -> str:
+    """The part of `pred` that states the final answer.
+
+    Text after the last final-answer marker if one exists, otherwise the last
+    non-empty line. Grading against this span instead of the whole prediction is
+    what stops mid-reasoning mentions from counting as the answer.
+    """
+    if not pred:
+        return ""
+    matches = list(_FINAL_MARKERS.finditer(pred))
+    if matches:
+        tail = pred[matches[-1].end():].strip()
+        if tail:
+            return tail
+    lines = [ln.strip() for ln in pred.strip().splitlines() if ln.strip()]
+    return lines[-1] if lines else pred.strip()
+
+
+def _normalise(text: str) -> str:
+    """Lowercase and collapse to alphanumeric tokens for tolerant comparison."""
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def is_correct(pred: str, gold: str, benchmark: str, question: str = "") -> bool:
+    """Grade a prediction against gold, dispatching on the FORMAT of the gold.
+
+    `question` is optional but improves MCQ grading: it lets the extractor map an
+    answer given as option TEXT back to its letter.
+
+    Benchmark-name dispatch alone is not enough: BBH mixes parenthesised MCQ
+    letters ("(A)"), booleans ("False"), free numbers ("-50") and word-sorting
+    strings across its subtasks, so the gold itself decides how to compare.
+
+    The previous fallback accepted `gold in pred`, which scored
+    "False and True = False, therefore the answer is True" as correct for
+    gold="False", and matched gold="no" inside "I do not know". Both are fixed
+    by grading the conclusion span with format-aware comparison.
+    """
     if not pred:
         return False
-    if benchmark in IS_MCQ:
-        extracted = extract_mcq_choice(pred)
-        return bool(extracted and extracted == gold.strip().upper())
+
+    gold_s = gold.strip()
+    if not gold_s:
+        return False
+
+    # GSM8K keeps its dedicated numeric path (handles the '#### N' gold format).
     if benchmark == "gsm8k":
         return is_correct_prediction(pred, extract_gsm8k_gold(gold))
-    return (
-        pred.strip().lower() == gold.strip().lower()
-        or gold.strip().lower() in pred.strip().lower()
-    )
+
+    # 1. Parenthesised MCQ letter, e.g. BBH "(A)" -- compare extracted choices.
+    paren = re.fullmatch(r"\(([A-Ja-j])\)", gold_s)
+    if paren:
+        return extract_mcq_choice(pred, question) == paren.group(1).upper()
+
+    # 2. Benchmarks declared multiple-choice: gold is a bare letter.
+    if benchmark in IS_MCQ:
+        extracted = extract_mcq_choice(pred, question)
+        return bool(extracted and extracted == gold_s.upper())
+
+    span = _conclusion_span(pred)
+    gold_l = gold_s.lower()
+
+    # 3. Boolean / polarity golds: take the LAST polarity word in the conclusion
+    #    so the stated verdict wins over anything mentioned while working, and
+    #    compare canonical polarity so "True" matches gold "yes".
+    if gold_l in _BOOLEAN_GOLDS:
+        stated = [t for t in re.findall(r"[a-z]+", span.lower()) if t in _BOOLEAN_GOLDS]
+        return bool(stated) and _POLARITY_CANON[stated[-1]] == _POLARITY_CANON[gold_l]
+
+    # 4. Numeric golds: compare the last number in the conclusion.
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", gold_s):
+        nums = re.findall(r"-?\d+(?:\.\d+)?", span.replace(",", ""))
+        if not nums:
+            return False
+        try:
+            return abs(float(nums[-1]) - float(gold_s)) < 1e-6
+        except ValueError:
+            return False
+
+    # 5. Free-form gold: require the conclusion to be, or end with, the gold
+    #    phrase -- not merely to contain it somewhere.
+    span_n, gold_n = _normalise(span), _normalise(gold_s)
+    if not gold_n:
+        return False
+    return span_n == gold_n or span_n.endswith(gold_n)
 
 
 def write_summary_json(path: str, results: dict):
@@ -357,6 +587,7 @@ def run_benchmark_on_gpu(
     batch_size: int,
     use_vllm: bool,
     device: str | None,
+    oracle_selection: bool = False,
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     set_seed(seed)
@@ -415,13 +646,14 @@ def run_benchmark_on_gpu(
                         q,
                         task_type,
                         gold=gold,
+                        oracle_selection=oracle_selection,
                     )
                     pred_qubo_n = extract_answer(pred_q, benchmark_name)
                     pred_g_n = extract_answer(preds_g[j], benchmark_name)
                     pred_c_n = extract_answer(preds_c[j], benchmark_name)
-                    c_g = int(is_correct(pred_g_n, gold, benchmark_name))
-                    c_c = int(is_correct(pred_c_n, gold, benchmark_name))
-                    c_q = int(is_correct(pred_qubo_n, gold, benchmark_name))
+                    c_g = int(is_correct(pred_g_n, gold, benchmark_name, q))
+                    c_c = int(is_correct(pred_c_n, gold, benchmark_name, q))
+                    c_q = int(is_correct(pred_qubo_n, gold, benchmark_name, q))
                     correct_greedy += c_g
                     correct_cot += c_c
                     correct_qubo += c_q
@@ -482,14 +714,15 @@ def run_benchmark_on_gpu(
                     q,
                     task_type,
                     gold=gold,
+                    oracle_selection=oracle_selection,
                 )
                 t3 = time.time()
                 pred_g_n = extract_answer(pred_greedy, benchmark_name)
                 pred_c_n = extract_answer(pred_cot, benchmark_name)
                 pred_q_n = extract_answer(pred_qubo, benchmark_name)
-                c_g = int(is_correct(pred_g_n, gold, benchmark_name))
-                c_c = int(is_correct(pred_c_n, gold, benchmark_name))
-                c_q = int(is_correct(pred_q_n, gold, benchmark_name))
+                c_g = int(is_correct(pred_g_n, gold, benchmark_name, q))
+                c_c = int(is_correct(pred_c_n, gold, benchmark_name, q))
+                c_q = int(is_correct(pred_q_n, gold, benchmark_name, q))
                 correct_greedy += c_g
                 correct_cot += c_c
                 correct_qubo += c_q
@@ -647,6 +880,7 @@ def main():
                             batch_size,
                             args.use_vllm,
                             args.device,
+                            args.oracle_selection,
                         )
                     )
 
@@ -887,15 +1121,16 @@ def main():
                                 q,
                                 task_type,
                                 gold=gold,
+                                oracle_selection=args.oracle_selection,
                             )
                             tq_end = time.time()
                             print(f" done ({tq_end - tq:.1f}s)", flush=True)
                             pred_g_n = extract_answer(preds_g[j], b)
                             pred_c_n = extract_answer(preds_c[j], b)
                             pred_q_n = extract_answer(pred_qubo, b)
-                            c_g = int(is_correct(pred_g_n, gold, b))
-                            c_c = int(is_correct(pred_c_n, gold, b))
-                            c_q = int(is_correct(pred_q_n, gold, b))
+                            c_g = int(is_correct(pred_g_n, gold, b, q))
+                            c_c = int(is_correct(pred_c_n, gold, b, q))
+                            c_q = int(is_correct(pred_q_n, gold, b, q))
                             correct_greedy += c_g
                             correct_cot += c_c
                             correct_qubo += c_q
@@ -1009,15 +1244,16 @@ def main():
                             q,
                             task_type,
                             gold=gold,
+                            oracle_selection=args.oracle_selection,
                         )
                         t3 = time.time()
                         print(f" {t3 - t2:.1f}s", flush=True)
                         pred_g_n = extract_answer(pred_greedy, b)
                         pred_c_n = extract_answer(pred_cot, b)
                         pred_q_n = extract_answer(pred_qubo, b)
-                        c_g = int(is_correct(pred_g_n, gold, b))
-                        c_c = int(is_correct(pred_c_n, gold, b))
-                        c_q = int(is_correct(pred_q_n, gold, b))
+                        c_g = int(is_correct(pred_g_n, gold, b, q))
+                        c_c = int(is_correct(pred_c_n, gold, b, q))
+                        c_q = int(is_correct(pred_q_n, gold, b, q))
                         correct_greedy += c_g
                         correct_cot += c_c
                         correct_qubo += c_q
@@ -1138,6 +1374,8 @@ def main():
 
     md_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.md")
     write_summary_markdown(md_path, summary, benchmark_list)
+
+    report_selection_sizes(runner.config.get("pipeline", {}).get("subset_size", 6))
 
     print(f"\n{'=' * 60}")
     print(f"Wrote: {json_path}")

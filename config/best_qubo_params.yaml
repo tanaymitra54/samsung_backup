@@ -1,11 +1,41 @@
 # ==============================================================================
 # FILE: config/best_qubo_params.yaml
 # ROLE: Optimal QUBO Hyperparameter Configuration
-# BRANCH ADDITION (abhyuday): Newly created configuration file storing the
-# best-performing QUBO objective coefficients discovered via the 81-combination
-# grid search in `scripts/tune_qubo_params.py`. Used by the QUBO formulator during
-# optimal reasoning chain selection.
+#
+# ############################################################################
+# # SUPERSEDED -- these values are NOT applied while `stale: true`.          #
+# ############################################################################
+#
+# The search that produced them is invalid on three independent counts:
+#
+#  1. ANSWER-KEY LEAKAGE. Chains were scored with the gold answer visible
+#     (tune_qubo_params.py passed gold to the verifier), so the winning
+#     combination is the one that best exploits an oracle the deployed pipeline
+#     never has. Evaluation is now gold-free, so these weights optimise a
+#     regime that no longer exists.
+#
+#  2. UNREACHABLE GRID. The old grid searched cardinality_penalty over
+#     [0.05, 0.1, 0.2] against penalty_weight up to 1.5. At those ratios the
+#     pairwise redundancy penalty always swamps the soft k-constraint, so EVERY
+#     combination in the search selects a single chain -- the multi-chain CoT
+#     scaffold the method depends on never engaged. cardinality_penalty=0.05
+#     below is the worst case of this. The grid now searches 0.2-1.2.
+#
+#  3. NO STATISTICAL POWER. validation_accuracy 0.7778 came from a
+#     10-question validation set (standard error about +/-13 points), with only
+#     52 of 81 combinations evaluated. The notes themselves record that all
+#     pw=1.0 combinations "scored identically" -- i.e. the search could not
+#     discriminate between them at all.
+#
+# TO REGENERATE (gold-free, widened grid, adequate sample):
+#     python scripts/tune_qubo_params.py --num-questions 300
+#
+# Then set `stale: false` so load_config() applies the result. Until then the
+# pipeline uses the values in config/config.yaml, whose cardinality_penalty was
+# chosen by measurement rather than by this search.
 # ==============================================================================
+
+stale: true
 
 penalty_weight: 1.0
 diversity_bonus: 0.1
@@ -14,7 +44,7 @@ answer_agree_weight: 0.3
 answer_sim_weight: 0.7
 validation_accuracy: 0.7778
 notes: |
-  Derived from partial grid search (52/81 combos evaluated, pw=1.5 not yet tested).
-  All pw=1.0 combinations scored identically (7/9 correct on 10-question validation).
-  First pw=1.0 combo used as canonical best. The untested pw=1.5 range may score
-  equivalently or better, but pw=1.0 is a safe, well-supported choice.
+  SUPERSEDED. Derived from a partial grid search (52/81 combos) on a 10-question
+  validation set, scored with the gold answer visible, over a cardinality_penalty
+  range too small to ever select more than one chain. Retained only for
+  provenance. Re-run tune_qubo_params.py and set stale: false.
