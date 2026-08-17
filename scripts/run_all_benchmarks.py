@@ -118,6 +118,12 @@ def parse_args():
         help="Save first 5 raw model outputs for debugging",
     )
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-question QUBO detail (pool size, variables, chains selected, "
+             "score spread). Useful for diagnosing a run; noisy for a long one.",
+    )
+    parser.add_argument(
         "--oracle-selection",
         action="store_true",
         help="ABLATION ONLY: let the verifier see the gold answer when scoring "
@@ -327,8 +333,12 @@ def run_qubo_pipeline(
     gold: str = "",
     oracle_selection: bool = False,
 ) -> str:
+    t_sample = time.time()
     samples = sampler.sample(question, task_type=task_type)
+    _STAGE_TIMES["sample"] += time.time() - t_sample
     if not samples:
+        if _VERBOSE:
+            print("      [qubo] sampler returned no chains", flush=True)
         return ""
 
     # The gold answer is deliberately WITHHELD from chain scoring here.
@@ -346,14 +356,32 @@ def run_qubo_pipeline(
     # oracle-selected ceiling can be reported alongside the deployable number.
     # Never enable it for a headline result.
     scoring_gold = gold if oracle_selection else None
+    t_verify = time.time()
     samples = verifier.score_batch(
         samples, task_type=task_type, gold=scoring_gold, question=question
     )
+    _STAGE_TIMES["verify"] += time.time() - t_verify
+
+    t_qubo = time.time()
     Q, qubo_var_indices = qubo_builder.build_qubo(samples)
+    _STAGE_TIMES["qubo_build"] += time.time() - t_qubo
+
+    t_solve = time.time()
     state, _ = solver.solve(Q)
+    _STAGE_TIMES["solve"] += time.time() - t_solve
+
     selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
     if not selected_indices:
         selected_indices = list(range(min(inference.subset_size, len(samples))))
+
+    if _VERBOSE:
+        scores = [s.get("correctness_score", 0.0) for s in samples]
+        print(
+            f"      [qubo] pool={len(samples)} vars={len(qubo_var_indices)} "
+            f"selected={len(selected_indices)} "
+            f"score min/mean/max={min(scores):.2f}/{sum(scores)/len(scores):.2f}/{max(scores):.2f}",
+            flush=True,
+        )
 
     # Record how many chains actually reached the CoT scaffold. If this sits at 1
     # while subset_size is 6, the QUBO is collapsing to a single chain and the
@@ -361,11 +389,27 @@ def run_qubo_pipeline(
     # cardinality_penalty being far too small relative to penalty_weight.
     _SELECTION_SIZES.append(len(selected_indices))
 
-    return inference.run(question, selected_indices, samples)
+    t_final = time.time()
+    answer = inference.run(question, selected_indices, samples)
+    _STAGE_TIMES["final_answer"] += time.time() - t_final
+    return answer
 
 
 # Running tally of QUBO subset sizes, summarised at the end of a benchmark run.
 _SELECTION_SIZES: list[int] = []
+
+# Cumulative wall time per pipeline stage. Printed at the end of a run so a slow
+# run can be attributed to a stage instead of guessed at.
+_STAGE_TIMES: dict[str, float] = {
+    "sample": 0.0,
+    "verify": 0.0,
+    "qubo_build": 0.0,
+    "solve": 0.0,
+    "final_answer": 0.0,
+}
+
+# Per-question detail. Set by --verbose.
+_VERBOSE = False
 
 
 def report_selection_sizes(subset_size: int):
@@ -384,6 +428,20 @@ def report_selection_sizes(subset_size: int):
             "qubo.cardinality_penalty (try 0.5-1.5) or lower qubo.penalty_weight, "
             "then re-run scripts/tune_qubo_params.py."
         )
+
+
+def report_stage_times():
+    """Where the wall clock actually went, per pipeline stage."""
+    total = sum(_STAGE_TIMES.values())
+    if total <= 0:
+        return
+    print(f"\n[Timing] QUBO pipeline stage breakdown (total {total / 60:.1f} min):")
+    for stage, secs in sorted(_STAGE_TIMES.items(), key=lambda kv: -kv[1]):
+        bar = "#" * int(40 * secs / total)
+        print(f"  {stage:<13} {secs / 60:7.1f} min  {secs / total:5.1%}  {bar}")
+    n = len(_SELECTION_SIZES)
+    if n:
+        print(f"  per question : {total / n:.1f}s across {n} questions")
 
 
 def extract_answer(pred: str, benchmark: str) -> str:
@@ -783,6 +841,8 @@ def run_benchmark_on_gpu(
 
 def main():
     args = parse_args()
+    global _VERBOSE
+    _VERBOSE = args.verbose
     requested_device = args.device
     if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
         selected_device = "cuda:0"
@@ -937,6 +997,30 @@ def main():
         print(f"Sampler device: {sampler.device}")
         print(f"Verifier device: {verifier.device}")
         print(f"Solver device: {solver.device}")
+
+        # Effective configuration. Printed so a run can be attributed to exact
+        # settings from the log alone -- which model, which QUBO weights, and
+        # crucially whether chain selection is gold-free or oracle.
+        _mc = runner.config.get("model", {})
+        _pc = runner.config.get("pipeline", {})
+        _qc = runner.config.get("qubo", {})
+        print(f"\n{'=' * 60}")
+        print("  EFFECTIVE CONFIG")
+        print(f"{'=' * 60}")
+        print(f"  model            : {_mc.get('name')}")
+        print(f"  adapter          : {_adapter_path or 'none (base model)'}")
+        print(f"  chain pool       : {_pc.get('num_answers', 3)} samples x 4 perturbations "
+              f"= {_pc.get('num_answers', 3) * 4}")
+        print(f"  subset_size      : {_pc.get('subset_size')}   max_new_tokens: {_pc.get('max_new_tokens')}")
+        print(f"  penalty_weight   : {_qc.get('penalty_weight')}   "
+              f"cardinality_penalty: {_qc.get('cardinality_penalty')}")
+        print(f"  answer_agree_w   : {_qc.get('answer_agree_weight')}   "
+              f"diversity_bonus: {_qc.get('diversity_bonus')}")
+        print(f"  chain scoring    : "
+              f"{'ORACLE (gold visible -- ABLATION, not deployable)' if args.oracle_selection else 'gold-free (consensus + consistency)'}")
+        print(f"  benchmarks       : {', '.join(benchmark_list)}")
+        print(f"  questions each   : {'full' if runner.full_eval else runner.subset_size}")
+        print(f"{'=' * 60}\n", flush=True)
 
         csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
         fieldnames = [
@@ -1376,6 +1460,7 @@ def main():
     write_summary_markdown(md_path, summary, benchmark_list)
 
     report_selection_sizes(runner.config.get("pipeline", {}).get("subset_size", 6))
+    report_stage_times()
 
     print(f"\n{'=' * 60}")
     print(f"Wrote: {json_path}")
