@@ -322,6 +322,40 @@ def make_batch_cot(inference: InferencePipeline):
     return fn
 
 
+def _majority_answer(samples: list[dict], benchmark: str) -> str:
+    """Plain self-consistency: the answer most of the chains agree on.
+
+    This is the honest strong baseline for any method that samples N chains. The
+    QUBO stage must beat majority voting over the SAME pool to be earning its
+    cost -- otherwise the gain is coming from sampling 12 chains, not from the
+    optimisation. Reported alongside greedy/CoT/QUBO for exactly that comparison.
+
+    Returns a string in whatever form is_correct() expects for this benchmark.
+    """
+    from collections import Counter
+
+    keys: list[str] = []
+    for smp in samples:
+        text = (str(smp.get("answer", "")).strip() or str(smp.get("reason", "")).strip())
+        if not text:
+            continue
+        if benchmark in IS_MCQ:
+            k = extract_mcq_choice(text)
+        else:
+            nums = re.findall(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+            k = nums[-1] if nums else ""
+            if not k:
+                span = _conclusion_span(text).lower()
+                pol = [t for t in re.findall(r"[a-z]+", span) if t in _BOOLEAN_GOLDS]
+                k = pol[-1] if pol else ""
+        if k:
+            keys.append(k)
+
+    if not keys:
+        return ""
+    return Counter(keys).most_common(1)[0][0]
+
+
 def run_qubo_pipeline(
     sampler: DiverseSampler,
     verifier: ReasonVerifier,
@@ -332,6 +366,7 @@ def run_qubo_pipeline(
     task_type: str = "math",
     gold: str = "",
     oracle_selection: bool = False,
+    benchmark: str = "",
 ) -> str:
     t_sample = time.time()
     samples = sampler.sample(question, task_type=task_type)
@@ -373,6 +408,12 @@ def run_qubo_pipeline(
     selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
     if not selected_indices:
         selected_indices = list(range(min(inference.subset_size, len(samples))))
+
+    if gold:
+        mv = _majority_answer(samples, benchmark)
+        _CHAIN_STATS["majority_total"] += 1
+        if mv and is_correct(mv, gold, benchmark, question):
+            _CHAIN_STATS["majority_correct"] += 1
 
     _CHAIN_STATS["pools"] += 1
     _CHAIN_STATS["chains"] += len(samples)
@@ -432,6 +473,8 @@ _CHAIN_STATS = {
     "score_sum": 0.0,
     "zero_consensus_pools": 0,
     "pools": 0,
+    "majority_correct": 0,
+    "majority_total": 0,
 }
 
 # Per-question detail. Set by --verbose.
@@ -479,6 +522,13 @@ def report_chain_quality():
     print(f"  mean consensus           : {mean_cons:.3f}")
     print(f"  mean quality score       : {mean_score:.3f}")
     print(f"  pools with zero consensus: {dead}/{pools}")
+    if _CHAIN_STATS["majority_total"]:
+        mv = _CHAIN_STATS["majority_correct"] / _CHAIN_STATS["majority_total"]
+        print("")
+        print(f"[Majority vote] self-consistency over the same chains: {mv:.1%} "
+              f"({_CHAIN_STATS['majority_correct']}/{_CHAIN_STATS['majority_total']})")
+        print("  The QUBO must beat this to be earning its cost -- otherwise the")
+        print("  gain comes from sampling 12 chains, not from the optimisation.")
 
     if empty_pct > 0.25:
         print("  WARNING: many chains never emitted a parseable answer. They are")
@@ -766,6 +816,7 @@ def run_benchmark_on_gpu(
                         task_type,
                         gold=gold,
                         oracle_selection=oracle_selection,
+                        benchmark=benchmark_name,
                     )
                     pred_qubo_n = extract_answer(pred_q, benchmark_name)
                     pred_g_n = extract_answer(preds_g[j], benchmark_name)
@@ -834,6 +885,7 @@ def run_benchmark_on_gpu(
                     task_type,
                     gold=gold,
                     oracle_selection=oracle_selection,
+                    benchmark=benchmark_name,
                 )
                 t3 = time.time()
                 pred_g_n = extract_answer(pred_greedy, benchmark_name)
@@ -1267,6 +1319,7 @@ def main():
                                 task_type,
                                 gold=gold,
                                 oracle_selection=args.oracle_selection,
+                                benchmark=b,
                             )
                             tq_end = time.time()
                             print(f" done ({tq_end - tq:.1f}s)", flush=True)
@@ -1390,6 +1443,7 @@ def main():
                             task_type,
                             gold=gold,
                             oracle_selection=args.oracle_selection,
+                            benchmark=b,
                         )
                         t3 = time.time()
                         print(f" {t3 - t2:.1f}s", flush=True)

@@ -159,6 +159,80 @@ class DiverseSampler:
             )
         return prompt
 
+    def generate_batch(
+        self, prompt: str, temperature: float, n: int
+    ) -> list[str]:
+        """Generate `n` completions for one prompt in a single forward batch.
+
+        WHY THIS EXISTS: the pool is 4 prompt framings x num_answers samples, and
+        issuing those as individual batch-1 generate() calls left the GPU almost
+        idle -- sampling measured at 90% of total benchmark wall time (21 of 23
+        minutes on an H100). num_return_sequences produces the whole group in one
+        call, so the pool costs 4 calls instead of 12 and each one actually fills
+        the device.
+
+        TEMPERATURE: all `n` sequences in a group share this temperature, so the
+        pool carries one temperature per framing rather than one per sample.
+        Diversity within a group still comes from do_sample=True drawing
+        different tokens. Across the pool that is 4 distinct temperatures instead
+        of 12, which is the intended axis of variation anyway -- framing is the
+        structured axis, temperature is noise on top.
+
+        Falls back to sequential single-sample generation if the batch OOMs.
+        """
+        chat_prompt = self._apply_chat_template(prompt)
+        retry_limits = [
+            (self.sampling_max_input_tokens, self.sampling_max_new_tokens),
+            (min(self.sampling_max_input_tokens, 512), min(self.sampling_max_new_tokens, 128)),
+        ]
+
+        for max_input_tokens, max_new_tokens in retry_limits:
+            inputs = None
+            outputs = None
+            try:
+                inputs = self.tokenizer(
+                    chat_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_input_tokens,
+                ).to(self.device)
+                with torch.inference_mode():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=self.top_p,
+                        do_sample=True,
+                        use_cache=True,
+                        num_return_sequences=n,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+                prompt_len = inputs["input_ids"].shape[1]
+                return [
+                    self.tokenizer.decode(seq[prompt_len:], skip_special_tokens=True).strip()
+                    for seq in outputs
+                ]
+            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                if "out of memory" not in str(e).lower():
+                    raise
+                torch.cuda.empty_cache()
+                gc.collect()
+            finally:
+                if inputs is not None:
+                    del inputs
+                if outputs is not None:
+                    del outputs
+                torch.cuda.empty_cache()
+                gc.collect()
+
+        # Batched path exhausted its retries -- fall back to one at a time.
+        print("[Sampler] Batched generation OOMed; falling back to sequential.", flush=True)
+        return [
+            self.generate_with_contrastive_decode(prompt, temperature=temperature)
+            for _ in range(n)
+        ]
+
     def generate_with_contrastive_decode(
         self, prompt: str, temperature: float, alpha: float = 0.1
     ) -> str:
@@ -327,17 +401,17 @@ class DiverseSampler:
         perturbations = self.perturb_prompt(question, task_type=task_type)
 
         for prompt_temp in perturbations:
-            for _ in range(self.num_answers):
-                # Draw a fresh temperature for each sample.
-                # Different temperatures within the same perturbation produce
-                # different levels of linguistic creativity in the output.
-                temp = random.uniform(
-                    self.config["pipeline"]["temperature_range"][0],
-                    self.config["pipeline"]["temperature_range"][1],
-                )
-                generated = self.generate_with_contrastive_decode(
-                    prompt_temp, temperature=temp
-                )
+            # One temperature per framing group, drawn from the configured range.
+            # The whole group is produced in a single batched call (see
+            # generate_batch) rather than num_answers separate generate() calls.
+            temp = random.uniform(
+                self.config["pipeline"]["temperature_range"][0],
+                self.config["pipeline"]["temperature_range"][1],
+            )
+            generations = self.generate_batch(
+                prompt_temp, temperature=temp, n=self.num_answers
+            )
+            for generated in generations:
                 # Parse the raw generated text into a structured (reason, answer) pair.
                 # The reason is the reasoning chain; the answer is the final conclusion.
                 reason, answer = self._parse_reason_answer(generated)

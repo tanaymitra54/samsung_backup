@@ -268,12 +268,44 @@ class InferencePipeline:
           different reasoning paths.
         """
         K = min(self.subset_size, len(selected_reasons))
-        top_reasons = selected_reasons[:K]
+        top = selected_reasons[:K]
 
-        prompt = "Here are some reasoning steps:\n"
-        for i, reason in enumerate(top_reasons, 1):
-            prompt += f"{i}. {reason}\n"
-        prompt += f"\nBased on these steps, answer the following question.\nQuestion: {question}\nAnswer:"
+        # Each entry may be a bare reason string or a (reason, conclusion) pair.
+        #
+        # WHY CONCLUSIONS ARE SHOWN: _parse_reason_answer strips the "Answer:"
+        # line out of `reason`, so this scaffold used to present partial workings
+        # with every conclusion removed and then ask for an answer. That is harder
+        # than plain chain-of-thought -- the model must re-derive each result from
+        # truncated work -- which matches the QUBO path trailing CoT on the first
+        # honest evaluation. Showing what each approach concluded turns this into a
+        # deliberation over candidate answers, the mechanism self-consistency uses.
+        lines = []
+        for i, entry in enumerate(top, 1):
+            if isinstance(entry, (tuple, list)) and len(entry) == 2:
+                reason, conclusion = entry
+            else:
+                reason, conclusion = entry, ""
+            reason = str(reason).strip()
+            conclusion = str(conclusion).strip()
+            if conclusion:
+                lines.append(
+                    "Approach {}:".format(i) + chr(10) + reason + chr(10)
+                    + "Approach {} concludes: {}".format(i, conclusion)
+                )
+            else:
+                lines.append("Approach {}:".format(i) + chr(10) + reason)
+
+        nl = chr(10)
+        prompt = (
+            "Several independent approaches to the same question are shown below."
+            + nl + "They may disagree, and some may be wrong." + nl + nl
+            + (nl + nl).join(lines)
+            + nl + nl
+            + "Weigh these approaches, resolve any disagreement, and answer the "
+            + "question yourself. Reason briefly, then give the final answer on a "
+            + "new line starting with 'Answer:'." + nl + nl
+            + "Question: " + question + nl
+        )
         return prompt
 
     def _apply_chat_template(self, prompt: str) -> str:
@@ -424,8 +456,12 @@ class InferencePipeline:
         self, question: str, selected_indices: list[int], samples: list[dict]
     ) -> str:
         selected_reasons = [samples[i]["reason"] for i in selected_indices]
+        selected_answers = [
+            str(samples[i].get("answer", "") or "").strip() for i in selected_indices
+        ]
         ranked_order = self._rank_reasons_by_relevance(selected_reasons, question)
-        ordered_reasons = [selected_reasons[i] for i in ranked_order]
+        # Carry each chain's own conclusion alongside its reasoning.
+        ordered = [(selected_reasons[i], selected_answers[i]) for i in ranked_order]
 
-        final_prompt = self.build_final_prompt(question, ordered_reasons)
+        final_prompt = self.build_final_prompt(question, ordered)
         return self.generate_answer(final_prompt)

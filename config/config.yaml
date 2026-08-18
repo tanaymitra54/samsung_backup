@@ -39,7 +39,13 @@ pipeline:
     # traces get truncated mid-derivation, which starves the verifier's
     # arithmetic-consistency signal and the final scaffold alike.
     max_new_tokens: 512
-    sampling_max_new_tokens: 256
+    # Raised from 256. Chains are parsed for a trailing "Answer:" line, and a
+    # chain truncated before that line has answer="" -- which contributes nothing
+    # to cross-chain consensus, the term carrying 65% of the gold-free quality
+    # score. The first honest evaluation showed quality scores clustered at
+    # 0.11-0.38, consistent with consensus being largely dead. Batched sampling
+    # (see DiverseSampler.generate_batch) pays for the extra tokens.
+    sampling_max_new_tokens: 448
     sampling_max_input_tokens: 768
     temperature_range: [0.3, 0.9]
     top_p: 0.95
