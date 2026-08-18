@@ -785,8 +785,16 @@ class ReasonVerifier:
             return samples
 
         # Pre-extract normalised answers for all chains
+        # Fall back to the reason text when the answer field is empty. Chains are
+        # sampled with a token cap and frequently get truncated before they emit
+        # the "Answer:" line, leaving answer="". The math branch below already
+        # falls back to `reason`; without the same fallback here every language
+        # chain compared as empty, consensus came out 0 for the whole pool, and
+        # gold-free scoring lost its single strongest signal.
         norm_answers = [
-            self._normalise_answer_for_consensus(s.get("answer", ""), task_type)
+            self._normalise_answer_for_consensus(
+                s.get("answer", "") or s.get("reason", ""), task_type
+            )
             for s in samples
         ]
         # For math: also extract numeric value for tolerance-based comparison

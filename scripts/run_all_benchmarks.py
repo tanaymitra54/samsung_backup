@@ -374,6 +374,19 @@ def run_qubo_pipeline(
     if not selected_indices:
         selected_indices = list(range(min(inference.subset_size, len(samples))))
 
+    _CHAIN_STATS["pools"] += 1
+    _CHAIN_STATS["chains"] += len(samples)
+    _CHAIN_STATS["empty_answer"] += sum(
+        1 for s_ in samples if not str(s_.get("answer", "")).strip()
+    )
+    _cons = [float(s_.get("consensus_score", 0.0)) for s_ in samples]
+    _CHAIN_STATS["consensus_sum"] += sum(_cons)
+    _CHAIN_STATS["score_sum"] += sum(
+        float(s_.get("correctness_score", 0.0)) for s_ in samples
+    )
+    if max(_cons, default=0.0) == 0.0:
+        _CHAIN_STATS["zero_consensus_pools"] += 1
+
     if _VERBOSE:
         scores = [s.get("correctness_score", 0.0) for s in samples]
         print(
@@ -408,6 +421,19 @@ _STAGE_TIMES: dict[str, float] = {
     "final_answer": 0.0,
 }
 
+# Chain-quality diagnostics. The gold-free score is 65% cross-chain consensus,
+# so if chains rarely produce a parseable answer the consensus term collapses to
+# zero and selection runs on process quality alone. These counters make that
+# visible instead of leaving it to be inferred from low scores.
+_CHAIN_STATS = {
+    "chains": 0,
+    "empty_answer": 0,
+    "consensus_sum": 0.0,
+    "score_sum": 0.0,
+    "zero_consensus_pools": 0,
+    "pools": 0,
+}
+
 # Per-question detail. Set by --verbose.
 _VERBOSE = False
 
@@ -428,6 +454,41 @@ def report_selection_sizes(subset_size: int):
             "qubo.cardinality_penalty (try 0.5-1.5) or lower qubo.penalty_weight, "
             "then re-run scripts/tune_qubo_params.py."
         )
+
+
+def report_chain_quality():
+    """Health of the candidate pools that gold-free selection depends on.
+
+    Gold-free scoring is 65% cross-chain consensus. Consensus only exists when
+    chains produce comparable answers, so a high empty-answer rate or a mean
+    consensus near zero means selection is effectively running on process
+    quality alone -- a weak signal that will underperform plain CoT.
+    """
+    n = _CHAIN_STATS["chains"]
+    if not n:
+        return
+    empty_pct = _CHAIN_STATS["empty_answer"] / n
+    mean_cons = _CHAIN_STATS["consensus_sum"] / n
+    mean_score = _CHAIN_STATS["score_sum"] / n
+    pools = _CHAIN_STATS["pools"]
+    dead = _CHAIN_STATS["zero_consensus_pools"]
+
+    print("")
+    print(f"[Chains] {n} chains across {pools} questions:")
+    print(f"  empty answer field       : {empty_pct:.1%}")
+    print(f"  mean consensus           : {mean_cons:.3f}")
+    print(f"  mean quality score       : {mean_score:.3f}")
+    print(f"  pools with zero consensus: {dead}/{pools}")
+
+    if empty_pct > 0.25:
+        print("  WARNING: many chains never emitted a parseable answer. They are")
+        print("  likely truncating before the 'Answer:' line -- raise")
+        print("  pipeline.sampling_max_new_tokens (try 384-512).")
+    if mean_cons < 0.15:
+        print("  WARNING: cross-chain consensus is near zero, so 65% of the")
+        print("  gold-free quality score carries no information and the QUBO is")
+        print("  selecting on process quality alone. Expect it to trail plain CoT")
+        print("  until this is fixed.")
 
 
 def report_stage_times():
@@ -1460,6 +1521,7 @@ def main():
     write_summary_markdown(md_path, summary, benchmark_list)
 
     report_selection_sizes(runner.config.get("pipeline", {}).get("subset_size", 6))
+    report_chain_quality()
     report_stage_times()
 
     print(f"\n{'=' * 60}")
