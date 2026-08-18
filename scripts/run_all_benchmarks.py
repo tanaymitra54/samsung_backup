@@ -362,6 +362,43 @@ def _majority_answer(samples: list[dict], benchmark: str) -> str:
     return Counter(keys).most_common(1)[0][0]
 
 
+def _weighted_vote(samples, benchmark, indices=None):
+    """Quality-weighted vote over chains, weighting each by its verifier score.
+
+    Free to compute -- the chains and their scores already exist -- so several
+    decodes can be compared in a single run instead of one per run.
+
+    `indices=None` votes over the whole pool; passing the QUBO-selected indices
+    votes over just those. The two answer different questions: whether the
+    verifier's quality score is a useful vote weight at all, and whether the
+    QUBO's subset is a better electorate than the full pool.
+    """
+    from collections import defaultdict
+
+    pool = samples if indices is None else [samples[i] for i in indices]
+    weights = defaultdict(float)
+    for smp in pool:
+        text = (str(smp.get("answer", "")).strip() or str(smp.get("reason", "")).strip())
+        if not text:
+            continue
+        if benchmark in IS_MCQ:
+            key = extract_mcq_choice(text)
+        else:
+            nums = re.findall(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+            key = nums[-1] if nums else ""
+            if not key:
+                span = _conclusion_span(text).lower()
+                pol = [t for t in re.findall(r"[a-z]+", span) if t in _BOOLEAN_GOLDS]
+                key = pol[-1] if pol else ""
+        if not key:
+            continue
+        weights[key] += float(smp.get("correctness_score", 0.0))
+
+    if not weights:
+        return ""
+    return max(weights.items(), key=lambda kv: kv[1])[0]
+
+
 def run_qubo_pipeline(
     sampler: DiverseSampler,
     verifier: ReasonVerifier,
@@ -416,10 +453,20 @@ def run_qubo_pipeline(
         selected_indices = list(range(min(inference.subset_size, len(samples))))
 
     if gold:
-        mv = _majority_answer(samples, benchmark)
         _CHAIN_STATS["majority_total"] += 1
+        mv = _majority_answer(samples, benchmark)
         if mv and is_correct(mv, gold, benchmark, question):
             _CHAIN_STATS["majority_correct"] += 1
+        # Quality-weighted vote over the whole pool: uses the verifier score as a
+        # vote weight, with no diversity penalty applied at all.
+        wv = _weighted_vote(samples, benchmark)
+        if wv and is_correct(wv, gold, benchmark, question):
+            _CHAIN_STATS["weighted_correct"] += 1
+        # Quality-weighted vote restricted to the QUBO-selected subset: tests
+        # whether the selection is a better electorate than the full pool.
+        qv = _weighted_vote(samples, benchmark, selected_indices)
+        if qv and is_correct(qv, gold, benchmark, question):
+            _CHAIN_STATS["qubo_vote_correct"] += 1
 
     _CHAIN_STATS["pools"] += 1
     _CHAIN_STATS["chains"] += len(samples)
@@ -481,6 +528,8 @@ _CHAIN_STATS = {
     "pools": 0,
     "majority_correct": 0,
     "majority_total": 0,
+    "weighted_correct": 0,
+    "qubo_vote_correct": 0,
 }
 
 # Per-question detail. Set by --verbose.
@@ -533,8 +582,16 @@ def report_chain_quality():
         print("")
         print(f"[Majority vote] self-consistency over the same chains: {mv:.1%} "
               f"({_CHAIN_STATS['majority_correct']}/{_CHAIN_STATS['majority_total']})")
-        print("  The QUBO must beat this to be earning its cost -- otherwise the")
-        print("  gain comes from sampling 12 chains, not from the optimisation.")
+        wv = _CHAIN_STATS["weighted_correct"] / _CHAIN_STATS["majority_total"]
+        qv = _CHAIN_STATS["qubo_vote_correct"] / _CHAIN_STATS["majority_total"]
+        t = _CHAIN_STATS["majority_total"]
+        print(f"[Decode variants] over the same chains, no extra generation (n={t}):")
+        print(f"  plain majority vote          : {mv:.1%}")
+        print(f"  quality-weighted vote (pool) : {wv:.1%}")
+        print(f"  quality-weighted vote (QUBO) : {qv:.1%}")
+        print("  Compare these against the QUBO scaffold accuracy above. If a vote")
+        print("  variant wins, the selection is better used to pick which chains to")
+        print("  trust than to build a prompt the model must re-reason from.")
 
     if empty_pct > 0.25:
         print("  WARNING: many chains never emitted a parseable answer. They are")

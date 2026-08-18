@@ -30,9 +30,19 @@ model:
 
 pipeline:
     # 4 prompt perturbations x num_answers = candidate pool per question.
-    # 3 gives the 12-chain pool the QUBO stage is sized for; 2 leaves only 8 and
-    # measurably weakens both the consensus signal and the diversity selection.
-    num_answers: 3
+    #
+    # Raised 3 -> 5 (pool 12 -> 20). Gold-free quality is 65% cross-chain
+    # consensus, and a consensus estimate over 12 samples is coarse: one chain is
+    # worth 8 percentage points of agreement, so the signal moves in large steps.
+    # Self-consistency accuracy is known to keep improving with sample count into
+    # the tens (Wang et al. 2023 report gains out to ~40), and the first honest
+    # evaluation had majority vote at 60% against CoT's 65% -- close enough that a
+    # better-resolved vote is a credible way past it.
+    #
+    # Cost is linear in sampling, which is ~77% of runtime, so pool 20 is roughly
+    # 1.5x the wall time of pool 12. Raise to 6 (pool 24) if the vote decodes look
+    # like they are still improving.
+    num_answers: 5
     num_reasons: 4
     subset_size: 6
     # Generation budget. 96 tokens cannot hold a multi-step chain of thought --
