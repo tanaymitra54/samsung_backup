@@ -118,6 +118,12 @@ def parse_args():
         help="Save first 5 raw model outputs for debugging",
     )
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Discard cached per-question results and regenerate. Required after "
+             "any code or config change, since the cache is not keyed on either.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-question QUBO detail (pool size, variables, chains selected, "
@@ -1181,7 +1187,16 @@ def main():
             print(f"  ✓ Loaded {len(questions)} questions")
 
             # Check if completed or partial cached results exist for this benchmark & condition
+            #
+            # NOTE: this cache is keyed only on (output_dir, condition_label,
+            # benchmark). It knows nothing about the code or config that produced
+            # it, so re-running after a change silently returns the OLD numbers.
+            # --fresh discards it; otherwise the age of the file is reported so a
+            # stale reuse is at least visible.
             cached_rows = []
+            if args.fresh and os.path.exists(jsonl_path):
+                os.remove(jsonl_path)
+                print(f"  [Cache] --fresh: discarded {jsonl_path}")
             if os.path.exists(jsonl_path):
                 try:
                     with open(jsonl_path, "r", encoding="utf-8") as f_check:
@@ -1206,7 +1221,11 @@ def main():
                     "abs_gain_vs_greedy": acc_qubo - acc_greedy,
                     "cot_gain_over_greedy": acc_cot - acc_greedy,
                 }
-                print(f"  [Cache] Found {tot}/{len(questions)} completed results in {jsonl_path}. Skipping generation.")
+                _age_min = (time.time() - os.path.getmtime(jsonl_path)) / 60.0
+                print(f"  [Cache] Found {tot}/{len(questions)} completed results in {jsonl_path}.")
+                print(f"  [Cache] SKIPPING GENERATION -- these results are {_age_min:.0f} min old and were")
+                print(f"  [Cache] produced by whatever code/config existed then, NOT by this run.")
+                print(f"  [Cache] Re-run with --fresh (or a new --output-dir) to regenerate.")
                 print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%}")
                 for idx, r in enumerate(cached_rows):
                     csv_row = {
