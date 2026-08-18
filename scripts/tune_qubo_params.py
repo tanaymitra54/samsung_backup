@@ -18,7 +18,7 @@ Runs an 81-combination grid search over QUBO parameters on the first
 PARAMETER GRID (81 total combinations):
     penalty_weight:       [0.5, 1.0, 2.0]
     diversity_bonus:      [0.1, 0.3, 0.5]
-    cardinality_penalty:  [0.2, 0.6, 1.2]
+    cardinality_penalty:  [0.4, 1.2, 2.5]
     answer_agree_weight:  [0.1, 0.3, 0.5]
     answer_sim_weight:    1.0 - answer_agree_weight  (always sums to 1.0)
 
@@ -107,6 +107,15 @@ from pipeline.verifier import ReasonVerifier
 #
 # cardinality_penalty must be within roughly an order of magnitude of
 # penalty_weight for the k-constraint to bind, so its range now overlaps it.
+#
+# Range raised again after measuring on real chains: cardinality_penalty 0.8
+# yields only 2.1 selected chains per question against subset_size 6, because
+# real chains for one question are far more similar than synthetic ones, so the
+# redundancy penalty is stronger in practice. 1.2 was still too low to reach a
+# fuller subset. Note the tension the search has to resolve: as this term grows
+# the solver is forced toward exactly k chains chosen on diagonal quality alone,
+# and the pairwise diversity structure stops mattering -- so higher is not
+# automatically better and the optimum is somewhere in the middle.
 # answer_agree_weight is also allowed to go lower: gold-free scoring REWARDS
 # cross-chain consensus on the diagonal, so penalising answer agreement off the
 # diagonal now works against the quality signal rather than complementing it.
@@ -114,7 +123,7 @@ from pipeline.verifier import ReasonVerifier
 # Still 3^4 = 81 combinations, so runtime is unchanged.
 _PW_VALUES   = [0.5, 1.0, 2.0]          # penalty_weight
 _DB_VALUES   = [0.1, 0.3, 0.5]          # diversity_bonus
-_CP_VALUES   = [0.2, 0.6, 1.2]          # cardinality_penalty
+_CP_VALUES   = [0.4, 1.2, 2.5]          # cardinality_penalty
 _AAW_VALUES  = [0.1, 0.3, 0.5]          # answer_agree_weight
 # answer_sim_weight = 1.0 - answer_agree_weight
 
