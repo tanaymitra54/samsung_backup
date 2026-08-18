@@ -180,5 +180,9 @@ evaluation:
     # this pipeline is trying to demonstrate.
     subset_size: 300
     full_eval: false
-    batch_size: 4
+    # Questions per batched generation call for the greedy and CoT baselines.
+    # generate_answers_batch ignored this entirely and ran at batch 1 until it was
+    # fixed; 16 is comfortable for a 3B model on an 80GB card and the code halves
+    # the batch automatically on OOM.
+    batch_size: 16
     use_batched_inference: true

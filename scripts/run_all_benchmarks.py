@@ -107,6 +107,15 @@ def parse_args():
         help="Distribute benchmarks across available GPUs",
     )
     parser.add_argument(
+        "--gpus",
+        nargs="*",
+        type=int,
+        default=None,
+        help="Explicit GPU ids for --multi-gpu, e.g. --gpus 0 1. Without this every "
+             "visible device is used, which is wrong on a shared node where one card "
+             "is busy: a worker landing there will crawl or OOM and hold up the run.",
+    )
+    parser.add_argument(
         "--wandb-project",
         type=str,
         default=None,
@@ -1085,7 +1094,13 @@ def main():
             print("  WARNING: wandb not installed. Install with `pip install wandb`.")
             args.wandb_project = None
 
-    num_gpus = torch.cuda.device_count() if args.multi_gpu else 0
+    if args.multi_gpu:
+        gpu_ids = args.gpus if args.gpus else list(range(torch.cuda.device_count()))
+    else:
+        gpu_ids = []
+    num_gpus = len(gpu_ids)
+    if num_gpus:
+        print(f"  Using GPUs: {gpu_ids}")
     summary = {}
     all_rows = []
 
@@ -1093,10 +1108,9 @@ def main():
         print(
             f"  Distributing {len(benchmark_list)} benchmarks across {num_gpus} GPUs..."
         )
-        chunk_size = max(1, len(benchmark_list) // num_gpus)
         gpu_assignments = {}
         for i, b in enumerate(benchmark_list):
-            gpu_id = i % num_gpus
+            gpu_id = gpu_ids[i % num_gpus]
             gpu_assignments.setdefault(gpu_id, []).append(b)
 
         with ProcessPoolExecutor(max_workers=num_gpus) as executor:

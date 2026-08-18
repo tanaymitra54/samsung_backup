@@ -94,6 +94,10 @@ class InferencePipeline:
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_cfg["name"], cache_dir=model_cfg.get("cache_dir")
         )
+        # Decoder-only generation requires LEFT padding: with right padding the
+        # pad tokens sit between the prompt and the first generated token, so
+        # short prompts in a batch decode from padding instead of their own text.
+        self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -365,15 +369,21 @@ class InferencePipeline:
 
         return ""
 
-    def generate_answers_batch(self, prompts: list[str], batch_size: int = 1) -> list[str]:
-        """Generate answers for multiple prompts with memory management.
-        
-        Args:
-            prompts: List of prompts to process
-            batch_size: Number of prompts to process at once (default 1 for maximum memory safety)
-        
-        Returns:
-            List of generated answers
+    def generate_answers_batch(self, prompts: list[str], batch_size: int = 8) -> list[str]:
+        """Generate answers for many prompts, genuinely batched.
+
+        This previously looped one prompt at a time and ignored `batch_size`
+        entirely despite its name, so the greedy and CoT baselines ran at batch 1
+        on an H100 -- roughly 8s per question for CoT. Real batching makes those
+        paths several times faster at identical outputs, since greedy decoding is
+        deterministic and unaffected by batch composition.
+
+        Left padding (set in __init__) is what makes this correct: with right
+        padding the pad tokens would sit between a short prompt and its first
+        generated token.
+
+        On OOM the batch is halved and retried, down to single prompts, so a
+        large batch_size degrades gracefully rather than failing the run.
         """
         chat_prompts = [self._apply_chat_template(p) for p in prompts]
         if self.use_vllm:
@@ -381,23 +391,26 @@ class InferencePipeline:
                 return self.generate_answers_vllm(chat_prompts)
             except ImportError:
                 self.use_vllm = False
-        
-        all_answers = []
-        
-        # Process one prompt at a time for maximum memory safety
-        for prompt_idx, chat_prompt in enumerate(chat_prompts):
+
+        all_answers: list[str] = []
+        i = 0
+        bs = max(1, batch_size)
+
+        while i < len(chat_prompts):
+            chunk = chat_prompts[i:i + bs]
+            inputs = None
+            outputs = None
             try:
-                # Tokenize with truncation on CPU first
                 inputs = self.tokenizer(
-                    chat_prompt, 
+                    chunk,
                     return_tensors="pt",
+                    padding=True,
                     truncation=True,
-                    max_length=2048
+                    max_length=2048,
                 ).to(self.generation_input_device)
-                
+
                 input_len = inputs["input_ids"].shape[1]
-                
-                with torch.no_grad():
+                with torch.inference_mode():
                     outputs = self.model.generate(
                         **inputs,
                         max_new_tokens=self.max_new_tokens,
@@ -406,30 +419,33 @@ class InferencePipeline:
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )
-                
-                # Decode answer
-                ans = self.tokenizer.decode(
-                    outputs[0][input_len:], skip_special_tokens=True
-                )
-                all_answers.append(ans.strip())
-                
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    # Return empty for this prompt
-                    all_answers.append("")
-                else:
+                # Left padding means every row shares the same prompt width.
+                for seq in outputs:
+                    all_answers.append(
+                        self.tokenizer.decode(seq[input_len:], skip_special_tokens=True).strip()
+                    )
+                i += len(chunk)
+
+            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                if "out of memory" not in str(e).lower():
                     raise
+                torch.cuda.empty_cache()
+                gc.collect()
+                if bs == 1:
+                    # Cannot shrink further; record a miss and move on.
+                    all_answers.append("")
+                    i += 1
+                else:
+                    bs = max(1, bs // 2)
+                    print(f"[Inference] OOM; reducing generation batch size to {bs}.", flush=True)
             finally:
-                # Clean up after each prompt
-                if 'inputs' in locals():
+                if inputs is not None:
                     del inputs
-                if 'outputs' in locals():
+                if outputs is not None:
                     del outputs
                 torch.cuda.empty_cache()
                 gc.collect()
-        
+
         return all_answers
 
     def generate_answers_vllm(self, prompts: list[str]) -> list[str]:
