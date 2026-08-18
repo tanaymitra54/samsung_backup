@@ -121,22 +121,41 @@ class SimulatedAnnealingSolver:
             energies = torch.where(accept, new_energies, energies)
 
             if step % 10 == 0:
-                for k in range(n_temps - 1):
-                    idx_k = k * replicas_per_temp
-                    idx_k1 = (k + 1) * replicas_per_temp
-                    e_k = energies[idx_k:idx_k + replicas_per_temp]
-                    e_k1 = energies[idx_k1:idx_k1 + replicas_per_temp]
-                    beta_diff = (1.0 / temps[k]) - (1.0 / temps[k + 1])
-                    swap_prob = torch.exp(-beta_diff * (e_k1 - e_k))
-                    swap = torch.rand(replicas_per_temp, device=str(self.device)) < swap_prob
-                    for j in range(replicas_per_temp):
-                        if swap[j]:
-                            s = states[idx_k + j].clone()
-                            states[idx_k + j] = states[idx_k1 + j].clone()
-                            states[idx_k1 + j] = s
-                            e = energies[idx_k + j].item()
-                            energies[idx_k + j] = energies[idx_k1 + j].item()
-                            energies[idx_k1 + j] = e
+                # Replica exchange, vectorised.
+                #
+                # This was a Python double loop over temperature pairs and
+                # replicas, with .item() calls inside it. Every .item() forces a
+                # GPU->CPU sync, and the block runs ~3000 times per solve, which
+                # made annealing 22% of benchmark wall time once the pool grew to
+                # 20 chains (4.0 min per 20 questions, up from 1.0).
+                #
+                # Adjacent-pair swaps cannot all be applied at once -- pairs
+                # (k, k+1) and (k+1, k+2) would both claim replica k+1 -- so this
+                # alternates even and odd pair sets on successive exchange rounds,
+                # the standard even-odd scheme. Both views share storage with
+                # `states` and `energies`, so writes propagate.
+                e_view = energies.view(n_temps, replicas_per_temp)
+                s_view = states.view(n_temps, replicas_per_temp, n)
+                parity = (step // 10) % 2
+                ks = torch.arange(parity, n_temps - 1, 2, device=str(self.device))
+                if ks.numel() > 0:
+                    beta = 1.0 / temps
+                    beta_diff = (beta[ks] - beta[ks + 1]).unsqueeze(1)
+                    de = e_view[ks + 1] - e_view[ks]
+                    swap = torch.rand(
+                        (ks.numel(), replicas_per_temp), device=str(self.device)
+                    ) < torch.exp(-beta_diff * de)
+
+                    mask = swap.unsqueeze(-1)
+                    s_lo = s_view[ks].clone()
+                    s_hi = s_view[ks + 1].clone()
+                    s_view[ks] = torch.where(mask, s_hi, s_lo)
+                    s_view[ks + 1] = torch.where(mask, s_lo, s_hi)
+
+                    e_lo = e_view[ks].clone()
+                    e_hi = e_view[ks + 1].clone()
+                    e_view[ks] = torch.where(swap, e_hi, e_lo)
+                    e_view[ks + 1] = torch.where(swap, e_lo, e_hi)
 
         best_idx = torch.argmin(energies)
         return states[best_idx].cpu().numpy().astype(int), energies[best_idx].item()
