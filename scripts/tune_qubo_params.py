@@ -38,18 +38,49 @@ EFFICIENCY:
     • Questions where ALL chains score < 0.2 are excluded from the
       accuracy denominator for every combo.
 
+COMBO SCORING (--scoring, default "proxy"):
+    Once a combo has built the QUBO and solved it for a question, its
+    accuracy still needs to be measured somehow. Two ways to do that:
+
+    "proxy" (default) -- majority vote over the SELECTED chains' own
+      already-known answers (proxy_vote()). No generation at all: build+solve
+      (already cheap) is the entire cost, so all 81 combos finish in minutes.
+      Justified by run_all_benchmarks.py's own finding that full-pipeline
+      QUBO accuracy already ties plain majority vote every time it has been
+      measured -- this proxy targets the thing that actually varies between
+      combos (which chains got selected) and should track the real
+      full-pipeline metric closely.
+
+    "synthesis" -- the original design: a fresh LLM generation per question
+      per combo (batched within a combo, but still one full pass over every
+      question for every combo). Measured on live hardware: combos took
+      57, 95 and 113 minutes and RISING -- GPU allocator fragmentation
+      building up over many thousands of variable-length batched generations
+      in one long-lived process -- which puts a full 81-combo sweep at 3+
+      days even before that degradation is counted. Use it to spot-check a
+      small shortlist already ranked by "proxy", not for the full grid:
+
+        python scripts/tune_qubo_params.py --scoring proxy            # rank all 81, minutes
+        # inspect results/qubo_hyperparam_search_proxy.json, pick top few
+        # then re-run with --scoring synthesis on a smaller --num-questions,
+        # comparing only those candidates' real full-pipeline accuracy.
+
+    Results from the two modes are NOT comparable numbers and are never
+    mixed: each mode writes and resumes its own
+    results/qubo_hyperparam_search_{proxy,synthesis}.json.
+
 RESUME:
-    Pass --resume to load existing results from
-    results/qubo_hyperparam_search.json and skip already-evaluated combos.
-    Resume keys are derived from the 4 parameter values — NOT combo index —
-    so they remain stable across runs even if grid ordering changes.
+    Pass --resume to load existing results for the CURRENT --scoring mode and
+    skip already-evaluated combos. Resume keys are derived from the 4
+    parameter values — NOT combo index — so they remain stable across runs
+    even if grid ordering changes.
 
 OUTPUTS:
-    results/qubo_hyperparam_search.json   — all combo results
-    config/best_qubo_params.yaml          — best combination details
+    results/qubo_hyperparam_search_{proxy,synthesis}.json  — all combo results
+    config/best_qubo_params.yaml                           — best combination
 
 USAGE:
-    # Run from the project root:
+    # Run from the project root (default: fast proxy scoring, all 81 combos):
     python scripts/tune_qubo_params.py
 
     # Resume an interrupted search:
@@ -57,6 +88,9 @@ USAGE:
 
     # Smoke-test with fewer questions:
     python scripts/tune_qubo_params.py --num-questions 20
+
+    # Full-pipeline spot-check of a shortlist (see COMBO SCORING above):
+    python scripts/tune_qubo_params.py --scoring synthesis --num-questions 60
 """
 
 from __future__ import annotations
@@ -82,6 +116,8 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 # ── Pipeline imports ───────────────────────────────────────────────────────────
+import torch
+
 from pipeline.device_utils import resolve_device
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
@@ -186,6 +222,25 @@ def parse_args() -> argparse.Namespace:
              "candidate chains. The winning combination then reflects what best "
              "exploits an answer key the deployed pipeline never has. The default "
              "(gold-free) matches how run_all_benchmarks.py now evaluates.",
+    )
+    parser.add_argument(
+        "--scoring",
+        choices=["proxy", "synthesis"],
+        default="proxy",
+        help="How a combo's accuracy is computed once it has selected a subset. "
+             "'proxy' (default): majority vote over the SELECTED chains' own "
+             "already-known answers -- zero extra generation, a full 81-combo "
+             "sweep takes minutes. Justified by run_all_benchmarks.py's own "
+             "finding that full-pipeline QUBO accuracy already ties plain "
+             "majority vote every time it has been measured, so this proxy "
+             "should track the real metric closely while being ~1000x cheaper. "
+             "'synthesis': the original path -- a fresh LLM generation per "
+             "question per combo. Measured on live hardware: 3 combos took "
+             "57/95/113 minutes and rising (GPU allocator fragmentation over "
+             "many variable-length batches), putting a full 81-combo sweep at "
+             "3+ days even before that degradation. Use 'synthesis' only to "
+             "spot-check a handful of combos already shortlisted by 'proxy' -- "
+             "see --best-config-path workflow in the module docstring.",
     )
     parser.add_argument(
         "--keep-exclusions",
@@ -417,6 +472,39 @@ def reconfigure_qubo_builder(builder: QUBOBuilder, combo: dict) -> None:
 
 
 # =============================================================================
+# ─── PROXY SCORING (--scoring proxy) ────────────────────────────────────────
+# =============================================================================
+
+def proxy_vote(
+    chains: list[dict], final_indices: list[int], extract_fn
+) -> Optional[float]:
+    """Predict the answer from the QUBO-selected subset alone -- no LLM call.
+
+    Majority vote over the SELECTED chains' own already-extracted answers
+    (falling back to their reasoning text when the answer field is empty, via
+    extract_fn -- pass verifier._extract_last_number). Same mechanism as
+    run_all_benchmarks.py's self-consistency baseline, scoped to just the
+    chains this combo chose, which is what actually varies between combos.
+
+    Ties are broken by first-encountered value (Counter.most_common is stable
+    on insertion order for equal counts), which is fine here: this only feeds
+    a ranking across 81 combos, not a single reported number.
+    """
+    from collections import Counter
+
+    votes = []
+    for idx in final_indices:
+        chain = chains[idx]
+        text = str(chain.get("answer", "") or chain.get("reason", "") or "")
+        val = extract_fn(text)
+        if val is not None:
+            votes.append(val)
+    if not votes:
+        return None
+    return Counter(votes).most_common(1)[0][0]
+
+
+# =============================================================================
 # ─── GRID SEARCH ───────────────────────────────────────────────────────────────
 # =============================================================================
 
@@ -433,6 +521,7 @@ def run_grid_search(
     output_path: Path,
     keep_exclusions: bool = False,
     oracle_scoring: bool = False,
+    scoring_mode: str = "proxy",
 ) -> list[dict]:
     """Run the grid search and return the full results list.
 
@@ -442,12 +531,19 @@ def run_grid_search(
         vectorised solver) but was previously interleaved with Phase B below,
         so nothing printed until an entire combo -- 300 sequential unbatched
         generations -- finished.
-      Phase B (one batched call for the whole combo): synthesise all final
-        answers via InferencePipeline.run_batch(). This is the expensive part.
-        300 individual generate_answer() calls (the old behaviour) becomes
-        ceil(300/batch_size) batched calls -- e.g. ~19 calls at batch_size=16
-        instead of 300, with the GPU actually filled on each one.
-      Phase C: extract predictions, compare to gold, accumulate accuracy.
+      Phase B/C, scoring_mode="proxy" (default): majority-vote over the
+        SELECTED chains' own already-known answers -- see proxy_vote(). No
+        generation at all; a full 81-combo sweep runs in minutes.
+      Phase B/C, scoring_mode="synthesis": the original path. One batched
+        generation call per combo via InferencePipeline.run_batch() (300
+        individual generate_answer() calls collapsed into ceil(300/batch_size)
+        batched ones), then predictions extracted from the generated text.
+        This is the expensive path -- measured on live hardware at 57-113+
+        minutes per combo and rising as the run progresses (GPU allocator
+        fragmentation over many variable-length batches in one long-lived
+        process), which puts a full 81-combo sweep at 3+ days. Intended for
+        spot-checking a small shortlist of combos already ranked by 'proxy',
+        not for the full grid.
     """
     total_combos = len(combos)
     all_results: list[dict] = []
@@ -527,42 +623,69 @@ def run_grid_search(
                     flush=True,
                 )
 
-        # ── Phase B: one batched generation call for the whole combo ────────
-        # This is the expensive part. Previously one generate_answer() call per
-        # question -- 300 sequential unbatched generations before this combo's
-        # single print line ever appeared. Now ceil(n/batch_size) batched calls.
-        phase_b_t0 = time.time()
-        print(
-            f"    [Combo {combo_idx:2d}/{total_combos}] "
-            f"synthesising {len(active_questions)} final answers "
-            f"(batch_size={_GEN_BATCH_SIZE}) ...",
-            flush=True,
-        )
-        try:
-            final_answers = inf_pipeline.run_batch(
-                active_questions, active_indices, active_chains,
-                batch_size=_GEN_BATCH_SIZE,
-            )
-        except Exception as e:
+        if scoring_mode == "proxy":
+            # ── Phase B/C: vote over the selected chains, no generation ─────
+            # See proxy_vote() -- majority vote among the QUBO-selected
+            # chains' own already-known answers. This is the entire cost of
+            # scoring a combo in proxy mode: a Python loop over already-cached
+            # data, no GPU call at all.
+            phase_bc_t0 = time.time()
+            for gold, chains, final_indices in zip(
+                active_golds, active_chains, active_indices
+            ):
+                pred = proxy_vote(chains, final_indices, verifier._extract_last_number)
+                if pred is None:
+                    blank += 1
+                elif numeric_match(pred, gold):
+                    correct += 1
             print(
-                f"\n  [WARN] combo={key} (batched synthesis): "
-                f"{type(e).__name__}: {e}",
-                file=sys.stderr,
+                f"    [Combo {combo_idx:2d}/{total_combos}] "
+                f"proxy-voted {len(active_questions)} questions in "
+                f"{time.time() - phase_bc_t0:.1f}s",
+                flush=True,
             )
-            final_answers = [""] * len(active_questions)
-        print(
-            f"    [Combo {combo_idx:2d}/{total_combos}] "
-            f"synthesis done in {time.time() - phase_b_t0:.0f}s",
-            flush=True,
-        )
+        else:
+            # ── Phase B: one batched generation call for the whole combo ────
+            # The expensive path. Previously one generate_answer() call per
+            # question -- 300 sequential unbatched generations before this
+            # combo's single print line ever appeared. Now ceil(n/batch_size)
+            # batched calls. empty_cache() up front gives the allocator its
+            # best shot at a clean start before this combo's first attempt at
+            # the full batch size, since fragmentation was observed to worsen
+            # combo-over-combo in one long-lived process.
+            torch.cuda.empty_cache()
+            phase_b_t0 = time.time()
+            print(
+                f"    [Combo {combo_idx:2d}/{total_combos}] "
+                f"synthesising {len(active_questions)} final answers "
+                f"(batch_size={_GEN_BATCH_SIZE}) ...",
+                flush=True,
+            )
+            try:
+                final_answers = inf_pipeline.run_batch(
+                    active_questions, active_indices, active_chains,
+                    batch_size=_GEN_BATCH_SIZE,
+                )
+            except Exception as e:
+                print(
+                    f"\n  [WARN] combo={key} (batched synthesis): "
+                    f"{type(e).__name__}: {e}",
+                    file=sys.stderr,
+                )
+                final_answers = [""] * len(active_questions)
+            print(
+                f"    [Combo {combo_idx:2d}/{total_combos}] "
+                f"synthesis done in {time.time() - phase_b_t0:.0f}s",
+                flush=True,
+            )
 
-        # ── Phase C: extract predictions, compare to gold ────────────────────
-        for gold, final_answer in zip(active_golds, final_answers):
-            pred = verifier._extract_last_number(final_answer)
-            if pred is None:
-                blank += 1
-            elif numeric_match(pred, gold):
-                correct += 1
+            # ── Phase C: extract predictions, compare to gold ────────────────
+            for gold, final_answer in zip(active_golds, final_answers):
+                pred = verifier._extract_last_number(final_answer)
+                if pred is None:
+                    blank += 1
+                elif numeric_match(pred, gold):
+                    correct += 1
 
         # Two denominators:
         #   accuracy_excluded — over questions that had at least one decent chain
@@ -618,7 +741,7 @@ def run_grid_search(
 # =============================================================================
 
 def save_best_config(best: dict, path: Path, n_questions: int = 0,
-                     oracle_scoring: bool = False) -> None:
+                     oracle_scoring: bool = False, scoring_mode: str = "proxy") -> None:
     """Write the best hyperparameter combination to a YAML file.
 
     `stale` is written explicitly. load_config() refuses to apply a params file
@@ -626,6 +749,12 @@ def save_best_config(best: dict, path: Path, n_questions: int = 0,
     kept from silently overriding config.yaml. A run scored WITH the oracle is
     marked stale for the same reason: its winner reflects answer-key exploitation
     rather than deployable behaviour.
+
+    scoring_mode ("proxy" vs "synthesis") is recorded but does NOT affect
+    staleness -- proxy scoring is gold-free and a legitimate default, just a
+    different (much cheaper) accuracy metric than full-pipeline synthesis. It
+    is recorded so a later run can tell which cost function actually produced
+    this file, since the two are not directly comparable numbers.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     se = (0.25 / n_questions) ** 0.5 if n_questions else None
@@ -639,10 +768,13 @@ def save_best_config(best: dict, path: Path, n_questions: int = 0,
         "validation_accuracy": round(best["accuracy"], 6),
         "n_questions":         n_questions,
         "scoring":             "oracle" if oracle_scoring else "gold-free",
+        "combo_scoring":       scoring_mode,
         "notes": (
             f"Grid search over {n_questions} questions, "
-            f"{'ORACLE (answer key visible -- ablation only)' if oracle_scoring else 'gold-free'} scoring. "
-            + (f"Accuracy standard error about +/-{se * 100:.1f} points. " if se else "")
+            f"{'ORACLE (answer key visible -- ablation only)' if oracle_scoring else 'gold-free'} scoring, "
+            f"combo accuracy via {scoring_mode}"
+            + (" (majority vote over selected chains, no generation)." if scoring_mode == "proxy" else " (full LLM re-synthesis).")
+            + (f" Accuracy standard error about +/-{se * 100:.1f} points. " if se else "")
             + ("Marked stale: oracle-scored results must not drive the deployed config."
                if oracle_scoring else
                "Verify the selected cardinality_penalty yields a multi-chain subset; "
@@ -716,8 +848,13 @@ def main() -> None:
     args = parse_args()
 
     config_path      = args.config
-    output_path      = Path(args.output_dir) / "qubo_hyperparam_search.json"
+    # Scoring-mode-specific filename: proxy and synthesis results are NOT
+    # comparable (different cost functions), so mixing them into one
+    # --resume'd file would rank combos against each other on two different
+    # metrics. A run under one mode never sees or skips results from the other.
+    output_path      = Path(args.output_dir) / f"qubo_hyperparam_search_{args.scoring}.json"
     best_config_path = Path(args.best_config_path)
+    print(f"[grid] Scoring mode: {args.scoring}  ->  results file: {output_path}")
 
     # ── Load config ────────────────────────────────────────────────────────────
     with open(config_path) as f:
@@ -820,6 +957,7 @@ def main() -> None:
         output_path=output_path,
         keep_exclusions=args.keep_exclusions,
         oracle_scoring=args.oracle_scoring,
+        scoring_mode=args.scoring,
     )
 
     elapsed_grid = time.time() - t_grid_start
@@ -839,7 +977,8 @@ def main() -> None:
     best = max(all_results, key=lambda r: r["accuracy"])
     save_best_config(best, best_config_path,
                      n_questions=len(examples),
-                     oracle_scoring=args.oracle_scoring)
+                     oracle_scoring=args.oracle_scoring,
+                     scoring_mode=args.scoring)
 
     # ── Print top-5 ────────────────────────────────────────────────────────────
     print_top5(all_results)
