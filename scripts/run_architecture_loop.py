@@ -239,6 +239,8 @@ def stage_train(args, round_idx: int, data_dir: Path) -> str:
         # Within-stage resume: pick up the newest per-epoch checkpoint rather than
         # restarting a partially finished fine-tune from scratch.
         cmd += ["--resume-finetune"]
+    if args.unsloth:
+        cmd += ["--unsloth"]
 
     _run(cmd, f"Stage B -- QLoRA SFT (round {round_idx})")
     return str(adapter_out)
@@ -297,6 +299,8 @@ def stage_dpo(args, round_idx: int, data_dir: Path, sft_adapter: str) -> str | N
     ]
     if args.resume:
         dpo_cmd += ["--resume"]
+    if args.unsloth:
+        dpo_cmd += ["--unsloth"]
 
     _run(dpo_cmd, f"Stage B2b -- DPO from SFT policy (round {round_idx})")
     return str(dpo_adapter)
@@ -459,6 +463,10 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--lora-rank", type=int, default=32)
     p.add_argument("--lora-alpha", type=int, default=64)
+    p.add_argument("--unsloth", action="store_true",
+                   help="Pass --unsloth through to both the SFT and DPO stages. Free for "
+                        "single-GPU LoRA, which is what both stages do. Not applicable to "
+                        "the datagen or evaluation stages -- those don't train a model.")
 
     p.add_argument("--datagen-args", default=None,
                    help="Extra arguments forwarded verbatim to generate_training_data.py, "

@@ -17,3 +17,10 @@ bitsandbytes>=0.43.0
 peft>=0.8.0
 trl>=0.8.0
 wandb>=0.16.0
+
+# Optional: --unsloth flag on fast_finetune_pipeline.py / run_dpo.py. Free and
+# open-source for single-GPU LoRA/QLoRA fine-tuning (which is what both scripts
+# do); multi-GPU training requires paid Unsloth Pro, not needed here since a 3B
+# model fits on one H100. Not used by tune_qubo_params.py -- that script never
+# trains a model, so there is nothing for Unsloth to accelerate there.
+unsloth>=2024.8

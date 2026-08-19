@@ -11,6 +11,19 @@ differing `trl` / `transformers` releases and includes FSDP compatibility monkey
 import argparse
 import os
 import json
+import sys
+
+# Unsloth patches transformers/peft/trl at import time, so it must be imported
+# before any of them -- importing it after (e.g. inside main(), once argparse
+# has parsed --unsloth) is too late, since this module already imports those
+# libraries below at module load time. Scanning sys.argv directly, before those
+# imports, is the only way an opt-in flag can control this.
+if "--unsloth" in sys.argv:
+    from unsloth import FastLanguageModel
+    _UNSLOTH_AVAILABLE = True
+else:
+    _UNSLOTH_AVAILABLE = False
+
 import torch
 import yaml
 from pathlib import Path
@@ -48,7 +61,22 @@ def main():
              "initialises from the SFT policy; without this the run is DPO-from-base "
              "and does not build on the SFT stage at all.",
     )
+    parser.add_argument(
+        "--unsloth", action="store_true",
+        help="Load the model and apply LoRA via Unsloth's FastLanguageModel instead "
+             "of plain transformers+peft. Free for single-GPU LoRA (this script's "
+             "case). This is the less-tested of the two Unsloth paths in this repo -- "
+             "the merge-SFT-adapter-then-repeft-for-DPO sequence is a more composite "
+             "operation than plain SFT+Unsloth, so verify the SFT-only --unsloth path "
+             "works before trusting this one for a real run.",
+    )
     args = parser.parse_args()
+    # Sanity check: the sys.argv pre-scan above and argparse's own parsing of
+    # --unsloth must agree, or the import-order fix silently did nothing.
+    assert args.unsloth == _UNSLOTH_AVAILABLE, (
+        "--unsloth parsed inconsistently with the module-level sys.argv scan; "
+        "this should not happen."
+    )
 
     with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -96,19 +124,34 @@ def main():
     use_bf16 = use_cuda and torch.cuda.is_bf16_supported()
 
     print(f"[DPO] Loading model {model_name}...")
-    mkw = {
-        "cache_dir": cache_dir,
-        "device_map": "auto" if use_cuda else None,
-        "torch_dtype": torch.bfloat16 if use_bf16 else torch.float16,
-    }
-    
-    # Base model
-    model = AutoModelForCausalLM.from_pretrained(model_name, **mkw)
+
+    if args.unsloth:
+        print(f"[DPO] Loading via Unsloth (4-bit=False, bf16={use_bf16}) ...")
+        # Formatting above already used `tokenizer` to build the dataset; keep
+        # that instance rather than swapping in the one returned here, so the
+        # tokenizer used to format the text matches the one training sees.
+        model, _ = FastLanguageModel.from_pretrained(
+            model_name=model_name,
+            max_seq_length=max_seq,
+            dtype=torch.bfloat16 if use_bf16 else torch.float16,
+            load_in_4bit=False,
+            cache_dir=cache_dir,
+        )
+    else:
+        mkw = {
+            "cache_dir": cache_dir,
+            "device_map": "auto" if use_cuda else None,
+            "torch_dtype": torch.bfloat16 if use_bf16 else torch.float16,
+        }
+        model = AutoModelForCausalLM.from_pretrained(model_name, **mkw)
 
     # Initialise from the SFT policy when one is supplied. The adapter is merged
     # into the weights so the fresh DPO LoRA below trains on top of it, and the
     # implicit reference model DPOTrainer derives is the SFT policy rather than
-    # the raw base model -- which is what DPO's objective assumes.
+    # the raw base model -- which is what DPO's objective assumes. This is a
+    # standard PEFT merge and works the same whether or not Unsloth loaded the
+    # base model: Unsloth's patches sit on top of an ordinary PreTrainedModel,
+    # which is all PeftModel.from_pretrained / merge_and_unload need.
     if args.sft_adapter:
         print(f"[DPO] Merging SFT adapter as the starting policy: {args.sft_adapter}")
         from peft import PeftModel
@@ -120,14 +163,31 @@ def main():
         print("[DPO] WARNING: no --sft-adapter given; training DPO from the BASE model.")
 
     # We also need a reference model. PEFT handles this automatically if we pass a standard model and peft_config.
-    peft_config = LoraConfig(
-        r=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        target_modules=train_cfg.get("lora_target_modules", ["q_proj", "v_proj", "k_proj", "o_proj"]),
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
+    if args.unsloth:
+        # Apply LoRA now, via Unsloth's own path, rather than handing DPOTrainer
+        # a bare LoraConfig to wrap -- mirrors the SFT script's --unsloth branch.
+        # peft_config is left None and must not be passed to DPOTrainer below,
+        # or the already-wrapped model would be peft-wrapped a second time.
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            target_modules=train_cfg.get("lora_target_modules", ["q_proj", "v_proj", "k_proj", "o_proj"]),
+            lora_dropout=0.05,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=3407,
+        )
+        peft_config = None
+    else:
+        peft_config = LoraConfig(
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            target_modules=train_cfg.get("lora_target_modules", ["q_proj", "v_proj", "k_proj", "o_proj"]),
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
 
     grad_accum = max(1, 4 // args.batch_size)
 
@@ -164,8 +224,12 @@ def main():
         "ref_model": None,
         "args": dpo_args,
         "train_dataset": train_ds,
-        "peft_config": peft_config,
     }
+    if peft_config is not None:
+        # None on the Unsloth path: that model is already PEFT-wrapped by
+        # FastLanguageModel.get_peft_model above, so DPOTrainer must not wrap
+        # it again.
+        trainer_kwargs["peft_config"] = peft_config
 
     dpo_trainer_params = set(inspect.signature(DPOTrainer.__init__).parameters.keys())
     if "beta" in dpo_trainer_params:
