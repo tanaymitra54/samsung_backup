@@ -481,3 +481,43 @@ class InferencePipeline:
 
         final_prompt = self.build_final_prompt(question, ordered)
         return self.generate_answer(final_prompt)
+
+    def build_prompt_for(
+        self, question: str, selected_indices: list[int], samples: list[dict]
+    ) -> str:
+        """The prompt-building half of run(), split out so many questions' final
+        synthesis prompts can be built (cheap, CPU-side ranking + string work)
+        and then generated in ONE batched call instead of one generate_answer()
+        call per question. See run_batch().
+        """
+        selected_reasons = [samples[i]["reason"] for i in selected_indices]
+        selected_answers = [
+            str(samples[i].get("answer", "") or "").strip() for i in selected_indices
+        ]
+        ranked_order = self._rank_reasons_by_relevance(selected_reasons, question)
+        ordered = [(selected_reasons[i], selected_answers[i]) for i in ranked_order]
+        return self.build_final_prompt(question, ordered)
+
+    def run_batch(
+        self,
+        questions: list[str],
+        selected_indices_list: list[list[int]],
+        samples_list: list[list[dict]],
+        batch_size: int = 16,
+    ) -> list[str]:
+        """Batched form of run() for many (question, selection) pairs at once.
+
+        WHY THIS EXISTS: scripts/tune_qubo_params.py calls the equivalent of
+        run() once per question per grid-search combination -- 300 questions x
+        81 combos = 24,300 individual unbatched generations, each up to
+        max_new_tokens long. That is the actual cost of an apparently "stuck"
+        multi-day grid search; the classical QUBO build/solve step is fast, but
+        nothing prints until an entire combo's 300 sequential generations finish.
+        This does the same synthesis, generating identical text, just batched --
+        see generate_answers_batch for the OOM back-off behaviour.
+        """
+        prompts = [
+            self.build_prompt_for(q, idx, samples)
+            for q, idx, samples in zip(questions, selected_indices_list, samples_list)
+        ]
+        return self.generate_answers_batch(prompts, batch_size=batch_size)

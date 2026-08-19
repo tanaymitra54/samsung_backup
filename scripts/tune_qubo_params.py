@@ -131,6 +131,12 @@ _AAW_VALUES  = [0.1, 0.3, 0.5]          # answer_agree_weight
 # this, the question is excluded from the accuracy denominator for ALL combos.
 _EXCLUSION_SCORE_THRESHOLD = 0.2
 
+# Batch size for the per-combo final-answer synthesis (Phase B of
+# run_grid_search). Matches evaluation.batch_size in config.yaml, which was
+# raised to 16 once generate_answers_batch actually batched (see
+# run_all_benchmarks.py history) -- comfortable for a 3B model on an 80GB card.
+_GEN_BATCH_SIZE = 16
+
 
 # =============================================================================
 # ─── CLI ───────────────────────────────────────────────────────────────────────
@@ -426,14 +432,17 @@ def run_grid_search(
     """Run the grid search and return the full results list.
 
     For each combo:
-      For each non-excluded question:
-        1. Use pre-scored cached chains (correctness_score already set)
-        2. Build QUBO Q matrix (hot-swapped params)
-        3. Solve with SA solver → state bits → selected_indices
-        4. Run InferencePipeline.run() → final answer text
-        5. Extract last number from answer
-        6. Compare to gold with hybrid tolerance → correct/blank/incorrect
-      Accuracy = correct / (n_questions - len(excluded_indices))
+      Phase A (classical, per question): use pre-scored cached chains, build
+        the QUBO, solve it, resolve final_indices. Fast (~1s/question with the
+        vectorised solver) but was previously interleaved with Phase B below,
+        so nothing printed until an entire combo -- 300 sequential unbatched
+        generations -- finished.
+      Phase B (one batched call for the whole combo): synthesise all final
+        answers via InferencePipeline.run_batch(). This is the expensive part.
+        300 individual generate_answer() calls (the old behaviour) becomes
+        ceil(300/batch_size) batched calls -- e.g. ~19 calls at batch_size=16
+        instead of 300, with the GPU actually filled on each one.
+      Phase C: extract predictions, compare to gold, accumulate accuracy.
     """
     total_combos = len(combos)
     all_results: list[dict] = []
@@ -461,26 +470,25 @@ def run_grid_search(
         correct = 0
         blank   = 0   # questions where no numeric answer could be extracted
 
+        # ── Phase A: classical QUBO build + solve for every question ────────
+        # Fast (~1s/question with the vectorised solver), but still prints
+        # progress -- at 300 questions this alone can take a few minutes, and
+        # silently running it was part of why a combo looked "stuck".
+        phase_a_t0 = time.time()
+        active_questions, active_golds, active_indices, active_chains = [], [], [], []
         for q_idx, ex in enumerate(examples):
             if q_idx in excluded_indices:
                 continue  # this question doesn't affect any combo's denominator
 
-            question = ex["question"]
-            gold     = ex["gold"]
-
             # Use a deep copy so the cached chains are never mutated between
-            # combos (QUBOBuilder and InferencePipeline only read, but
-            # deep-copying is cheap here and guarantees safety).
+            # combos (QUBOBuilder only reads, but deep-copying is cheap here
+            # and guarantees safety).
             chains = copy.deepcopy(cached_scored_chains[q_idx])
 
             try:
-                # Step 2: Build QUBO with current combo's parameters
                 Q, selected_indices = qubo_builder.build_qubo(chains)
-
-                # Step 3: Solve → binary state vector
                 state, _ = solver.solve(Q)
 
-                # Map state bits → sample indices in the original chain list
                 active_local = [i for i, bit in enumerate(state) if bit == 1]
                 if not active_local:
                     # Fallback: pick the single highest-quality chain
@@ -493,25 +501,63 @@ def run_grid_search(
                     active_local = [best_local]
 
                 final_indices = [selected_indices[i] for i in active_local]
-
-                # Step 4: Generate final answer from QUBO-selected reasons
-                final_answer = inf_pipeline.run(question, final_indices, chains)
-
-                # Step 5: Extract numeric prediction from generated text
-                pred = verifier._extract_last_number(final_answer)
-
-                if pred is None:
-                    blank += 1
-                elif numeric_match(pred, gold):
-                    correct += 1
+                active_questions.append(ex["question"])
+                active_golds.append(ex["gold"])
+                active_indices.append(final_indices)
+                active_chains.append(chains)
 
             except Exception as e:
                 print(
-                    f"\n  [WARN] q={q_idx} combo={key}: "
+                    f"\n  [WARN] q={q_idx} combo={key} (build/solve): "
                     f"{type(e).__name__}: {e}",
                     file=sys.stderr,
                 )
                 # Counts as incorrect (not blank — it's a pipeline failure)
+
+            if (q_idx + 1) % 50 == 0:
+                print(
+                    f"    [Combo {combo_idx:2d}/{total_combos}] "
+                    f"build+solve {q_idx + 1}/{len(examples)} "
+                    f"({time.time() - phase_a_t0:.0f}s elapsed)",
+                    flush=True,
+                )
+
+        # ── Phase B: one batched generation call for the whole combo ────────
+        # This is the expensive part. Previously one generate_answer() call per
+        # question -- 300 sequential unbatched generations before this combo's
+        # single print line ever appeared. Now ceil(n/batch_size) batched calls.
+        phase_b_t0 = time.time()
+        print(
+            f"    [Combo {combo_idx:2d}/{total_combos}] "
+            f"synthesising {len(active_questions)} final answers "
+            f"(batch_size={_GEN_BATCH_SIZE}) ...",
+            flush=True,
+        )
+        try:
+            final_answers = inf_pipeline.run_batch(
+                active_questions, active_indices, active_chains,
+                batch_size=_GEN_BATCH_SIZE,
+            )
+        except Exception as e:
+            print(
+                f"\n  [WARN] combo={key} (batched synthesis): "
+                f"{type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
+            final_answers = [""] * len(active_questions)
+        print(
+            f"    [Combo {combo_idx:2d}/{total_combos}] "
+            f"synthesis done in {time.time() - phase_b_t0:.0f}s",
+            flush=True,
+        )
+
+        # ── Phase C: extract predictions, compare to gold ────────────────────
+        for gold, final_answer in zip(active_golds, final_answers):
+            pred = verifier._extract_last_number(final_answer)
+            if pred is None:
+                blank += 1
+            elif numeric_match(pred, gold):
+                correct += 1
 
         # Two denominators:
         #   accuracy_excluded — over questions that had at least one decent chain
