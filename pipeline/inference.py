@@ -71,6 +71,7 @@ PHASE 2 TODO — SEPARATE FINAL-ANSWER MODEL:
 
 import gc
 import os
+import time
 import yaml
 import torch
 import numpy as np
@@ -395,11 +396,16 @@ class InferencePipeline:
         all_answers: list[str] = []
         i = 0
         bs = max(1, batch_size)
+        n_total = len(chat_prompts)
+        batch_num = 0
+        t_start = time.time()
 
         while i < len(chat_prompts):
             chunk = chat_prompts[i:i + bs]
+            batch_num += 1
             inputs = None
             outputs = None
+            t_batch = time.time()
             try:
                 inputs = self.tokenizer(
                     chunk,
@@ -425,6 +431,22 @@ class InferencePipeline:
                         self.tokenizer.decode(seq[input_len:], skip_special_tokens=True).strip()
                     )
                 i += len(chunk)
+
+                # A silent multi-minute wait here (a batch runs until every row
+                # in it hits EOS or max_new_tokens, up to 512 greedy steps) is
+                # indistinguishable from a hang without this. Printed on every
+                # batch, not just every N, because a batch here can itself take
+                # minutes -- there's no finer granularity to sample at.
+                elapsed = time.time() - t_start
+                done = min(i, n_total)
+                rate = done / elapsed if elapsed > 0 else 0
+                eta = (n_total - done) / rate if rate > 0 else float("nan")
+                print(
+                    f"    [Inference] batch {batch_num} (bs={len(chunk)}): "
+                    f"{done}/{n_total} done in {time.time() - t_batch:.1f}s "
+                    f"(ETA {eta:.0f}s)",
+                    flush=True,
+                )
 
             except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
                 if "out of memory" not in str(e).lower():

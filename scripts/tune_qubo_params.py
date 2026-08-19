@@ -132,10 +132,15 @@ _AAW_VALUES  = [0.1, 0.3, 0.5]          # answer_agree_weight
 _EXCLUSION_SCORE_THRESHOLD = 0.2
 
 # Batch size for the per-combo final-answer synthesis (Phase B of
-# run_grid_search). Matches evaluation.batch_size in config.yaml, which was
-# raised to 16 once generate_answers_batch actually batched (see
-# run_all_benchmarks.py history) -- comfortable for a 3B model on an 80GB card.
-_GEN_BATCH_SIZE = 16
+# run_grid_search). Originally matched evaluation.batch_size (16), but that
+# figure was calibrated on the short greedy/CoT generations in
+# run_all_benchmarks.py (tens of tokens). This script's synthesis prompts are
+# longer -- up to subset_size chains of reasoning as context, up to
+# max_new_tokens (512) of greedy output -- and 16 OOM'd on the first batch of
+# combo 1 on a live run. generate_answers_batch's own OOM back-off would have
+# recovered by halving to 8 anyway, but starting there directly skips a
+# guaranteed OOM-then-halve on every one of the 81 combos, not just the first.
+_GEN_BATCH_SIZE = 8
 
 
 # =============================================================================
