@@ -123,18 +123,66 @@ def load_questions(n: int) -> list[str]:
 
 # ── PRM scoring pass ─────────────────────────────────────────────────────────
 
+def _explain_vendored_code_failure(exc: Exception, args, stage: str) -> None:
+    """Turn an opaque transformers-compat crash into an actionable next step.
+
+    Qwen2.5-Math-PRM ships its own modeling code via trust_remote_code, written
+    against an older transformers. Each incompatibility only surfaces when
+    execution reaches that line, so fixing one reveals the next
+    (config.pad_token_id -> DynamicCache.from_legacy_cache -> ...). Two have
+    been patched in pipeline/prm_scorer.py; this explains the escape routes
+    rather than leaving a raw traceback to interpret.
+    """
+    import transformers
+    print("\n" + "!" * 70, file=sys.stderr)
+    print(f"  PRM failed during {stage}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    print("!" * 70, file=sys.stderr)
+    print(f"""
+  This is almost certainly a transformers-version incompatibility, not a bug
+  in your data or setup. {args.prm_model} vendors its own modeling code
+  (trust_remote_code=True) written against an older transformers than the
+  {transformers.__version__} installed here, and each removed API it calls only
+  fails once execution reaches it.
+
+  Two such breakages are already patched in pipeline/prm_scorer.py
+  (config.pad_token_id, DynamicCache.from_legacy_cache). If you have hit a
+  third, the highest-value fix is to stop patching one at a time:
+
+  OPTION 1 -- pin transformers for PRM scoring only (most reliable).
+    The PRM run is a standalone offline pass, so it can use its own env:
+        python -m venv .venv_prm
+        .venv_prm/bin/pip install "transformers==4.46.3" torch accelerate datasets
+        .venv_prm/bin/python scripts/prm_experiment.py --prm-model {args.prm_model}
+    Nothing else in the pipeline needs to change; only the cached score file
+    is consumed downstream.
+
+  OPTION 2 -- use a PRM that does not need trust_remote_code.
+        --prm-model Skywork/Skywork-o1-Open-PRM-Qwen-2.5-7B
+    Different families use different step-separator conventions, so
+    pipeline/prm_scorer.py may need an adapter for the new format -- it
+    currently targets the Qwen '<extra_0>' scheme and will say so clearly
+    rather than scoring nonsense.
+
+  Send me the traceback either way and I will tell you which is the shorter path.
+""", file=sys.stderr)
+
+
 def score_with_prm(questions, chains_all, args) -> list[list[float]]:
     """One PRM forward pass per chain. Cached to disk -- this is the only slow part."""
     from pipeline.prm_scorer import PRMScorer
     import time
 
     print(f"[prm] loading {args.prm_model} (aggregation={args.aggregation}) ...", flush=True)
-    scorer = PRMScorer(
-        model_name=args.prm_model,
-        device=args.device,
-        aggregation=args.aggregation,
-        cache_dir=args.cache_dir,
-    )
+    try:
+        scorer = PRMScorer(
+            model_name=args.prm_model,
+            device=args.device,
+            aggregation=args.aggregation,
+            cache_dir=args.cache_dir,
+        )
+    except (AttributeError, TypeError) as e:
+        _explain_vendored_code_failure(e, args, stage="loading")
+        raise
     print("[prm] loaded.", flush=True)
 
     all_scores: list[list[float]] = []
@@ -144,7 +192,11 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
     for qi, (question, chains) in enumerate(zip(questions, chains_all)):
         scores = []
         for ci, chain in enumerate(chains):
-            s, steps = scorer.score_chain(question, chain.get("reason", ""))
+            try:
+                s, steps = scorer.score_chain(question, chain.get("reason", ""))
+            except (AttributeError, TypeError) as e:
+                _explain_vendored_code_failure(e, args, stage="the first forward pass")
+                raise
             scores.append(s)
 
             # On a --limit smoke run, show one chain's per-step vector. A PRM

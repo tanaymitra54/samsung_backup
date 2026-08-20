@@ -76,6 +76,50 @@ _PRM_SYSTEM_PROMPT = (
 )
 
 
+def _install_legacy_cache_shim() -> bool:
+    """Restore DynamicCache.from_legacy_cache if the installed transformers dropped it.
+
+    Qwen2.5-Math-PRM vendors its own modeling code (trust_remote_code) written
+    against an older transformers, and that code calls
+
+        past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+
+    unconditionally inside forward(). The classmethod was removed when legacy
+    tuple-format caches were dropped, so the call raises AttributeError before
+    any scoring happens.
+
+    Scoring never needs a KV cache -- every call here is a single forward pass
+    over a complete sequence, with no autoregressive generation -- so the primary
+    fix is to disable caching outright (see PRMScorer.__init__). This shim exists
+    because the vendored code reaches the call before it consults use_cache in
+    some transformers versions. It reimplements the documented old behaviour
+    (build an empty cache, or replay a legacy tuple into a modern one) and is
+    only installed when the attribute is genuinely absent, so a transformers
+    release that still provides it is left untouched.
+
+    Returns True if a shim was installed.
+    """
+    try:
+        from transformers.cache_utils import DynamicCache
+    except ImportError:
+        return False
+
+    if hasattr(DynamicCache, "from_legacy_cache"):
+        return False
+
+    @classmethod
+    def _from_legacy_cache(cls, past_key_values=None):
+        cache = cls()
+        if past_key_values is not None:
+            for layer_idx, entry in enumerate(past_key_values):
+                key_states, value_states = entry[0], entry[1]
+                cache.update(key_states, value_states, layer_idx)
+        return cache
+
+    DynamicCache.from_legacy_cache = _from_legacy_cache
+    return True
+
+
 class PRMScorer:
     """Scores a reasoning chain by grading each of its steps independently."""
 
@@ -113,6 +157,10 @@ class PRMScorer:
         # Loading the config explicitly and setting the attribute ourselves fixes
         # it without pinning transformers or patching the vendored model file:
         # once it is in the config's __dict__, the remote code finds it.
+        if _install_legacy_cache_shim():
+            print("[prm] installed DynamicCache.from_legacy_cache compatibility shim "
+                  "for the vendored Qwen PRM modeling code.")
+
         config = AutoConfig.from_pretrained(
             model_name, cache_dir=cache_dir, trust_remote_code=True
         )
@@ -121,6 +169,11 @@ class PRMScorer:
             if pad_id is None:
                 pad_id = self.tokenizer.eos_token_id
             config.pad_token_id = pad_id
+
+        # Scoring is a single forward pass over a complete sequence -- there is no
+        # autoregressive decoding here, so a KV cache buys nothing and is the
+        # thing dragging the vendored code into removed cache APIs.
+        config.use_cache = False
 
         load_kwargs = {
             "cache_dir": cache_dir,
@@ -208,7 +261,14 @@ class PRMScorer:
         ).to(self.device)
 
         with torch.inference_mode():
-            outputs = self.model(input_ids=enc["input_ids"])
+            # use_cache=False both here and on the config: this is a scoring
+            # forward pass, not generation, and it keeps the vendored modeling
+            # code away from cache APIs that current transformers has removed.
+            outputs = self.model(
+                input_ids=enc["input_ids"],
+                attention_mask=enc.get("attention_mask"),
+                use_cache=False,
+            )
 
         # Qwen2.5-Math-PRM returns a 2-class logit per position; class 1 is
         # "this step is correct". Its vendored modeling code returns a bare
