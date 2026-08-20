@@ -123,6 +123,113 @@ def load_questions(n: int) -> list[str]:
 
 # ── PRM scoring pass ─────────────────────────────────────────────────────────
 
+def sweep_aggregation_rules(chains_all, golds, prm_scores) -> None:
+    """How should PRM scores be turned into ONE answer per question?
+
+    The default (sum of PRM over chains sharing an answer) is linear in vote
+    count, so it cannot overcome a count disadvantage no matter how confident
+    the PRM is. Measured on q89 of this pool: one correct chain at PRM 0.984
+    against seventeen majority chains at 0.816 gives 0.98 vs 13.9 -- the
+    majority wins by arithmetic, not by being right. With AUC 0.815 the ranking
+    signal is clearly there; the aggregation rule is what is throwing it away.
+
+    Each rule below scores every candidate answer differently:
+      count        plain majority (the baseline)
+      sum          count weighted by PRM -- linear, the current behaviour
+      max          an answer is as good as its single best-supported chain,
+                   which lets one strongly-verified chain outvote a large but
+                   weakly-verified crowd
+      mean         average support, ignoring how many chains back it
+      top2/top3    sum of only the k best chains per answer, capping how much
+                   raw popularity can accumulate
+      pow{p}       sum of PRM**p -- sharpens toward confident chains as p grows
+      gated{t}     plain count, but only chains scoring above t may vote
+      blend{a}     a * normalised count + (1-a) * normalised max
+
+    CAUTION: this sweeps many rules against the SAME 300 questions, so the top
+    entry is optimistically biased -- with ~12 rules, a couple of points of
+    apparent gain can be selection noise. Treat the winner as a hypothesis to
+    confirm on a held-out pool, not as a measured result.
+    """
+    from collections import defaultdict
+
+    def rules_for(rows):
+        """rows: list of dicts with 'ans' and 'prm'. Returns {rule_name: answer}."""
+        by_ans = defaultdict(list)
+        for r in rows:
+            by_ans[r["ans"]].append(r["prm"])
+
+        out = {}
+        out["count"] = max(by_ans.items(), key=lambda kv: len(kv[1]))[0]
+        out["sum"] = max(by_ans.items(), key=lambda kv: sum(kv[1]))[0]
+        out["max"] = max(by_ans.items(), key=lambda kv: max(kv[1]))[0]
+        out["mean"] = max(by_ans.items(), key=lambda kv: sum(kv[1]) / len(kv[1]))[0]
+        for k in (2, 3):
+            out[f"top{k}"] = max(
+                by_ans.items(), key=lambda kv: sum(sorted(kv[1], reverse=True)[:k])
+            )[0]
+        for p in (2, 4, 8):
+            out[f"pow{p}"] = max(
+                by_ans.items(), key=lambda kv: sum(v ** p for v in kv[1])
+            )[0]
+        for t in (0.5, 0.8, 0.9):
+            gated = {a: [v for v in vs if v >= t] for a, vs in by_ans.items()}
+            gated = {a: vs for a, vs in gated.items() if vs}
+            # Every chain filtered out -> fall back to plain count rather than
+            # abstaining, so the rule is never worse than the baseline by default.
+            src = gated if gated else by_ans
+            out[f"gated{t}"] = max(src.items(), key=lambda kv: len(kv[1]))[0]
+
+        n_tot = sum(len(v) for v in by_ans.values())
+        max_all = max(max(v) for v in by_ans.values()) or 1.0
+        for a_w in (0.3, 0.5, 0.7):
+            out[f"blend{a_w}"] = max(
+                by_ans.items(),
+                key=lambda kv: a_w * (len(kv[1]) / n_tot)
+                + (1 - a_w) * (max(kv[1]) / max_all),
+            )[0]
+        return out
+
+    tallies = defaultdict(int)
+    n = 0
+    for qi, (chains, gold) in enumerate(zip(chains_all, golds)):
+        rows = []
+        for c, p in zip(chains, prm_scores[qi]):
+            a = chain_answer(c)
+            if a is not None:
+                rows.append({"ans": a, "prm": float(p)})
+        if not rows:
+            continue
+        n += 1
+        for rule, ans in rules_for(rows).items():
+            tallies[rule] += numeric_match(ans, gold)
+
+    base = tallies["count"] / n
+    se = (base * (1 - base) / n) ** 0.5
+
+    print("\n" + "=" * 64)
+    print("  VOTE-AGGREGATION SWEEP  (same PRM scores, different rules)")
+    print("=" * 64)
+    print(f"  {'rule':<12}{'acc':>8}{'vs count':>11}   {'note':<22}")
+    print("  " + "-" * 56)
+    for rule, correct in sorted(tallies.items(), key=lambda kv: -kv[1]):
+        acc = correct / n
+        d = (acc - base) * 100
+        note = ""
+        if rule == "count":
+            note = "<- plain majority"
+        elif abs(d) < 2 * se * 100:
+            note = "within noise"
+        elif d > 0:
+            note = "beats baseline"
+        print(f"  {rule:<12}{acc:>7.1%}{d:>+10.1f}   {note:<22}")
+    print("  " + "-" * 56)
+    print(f"  n={n}, 2*SE = +/-{2*se*100:.1f} points. A rule must clear that band")
+    print("  to be distinguishable from plain voting at this sample size.")
+    print("\n  Sweeping ~14 rules on one 300-question pool biases the top entry")
+    print("  upward. Confirm any winner on a fresh pool before adopting it.")
+
+
 def _explain_vendored_code_failure(exc: Exception, args, stage: str) -> None:
     """Turn an opaque transformers-compat crash into an actionable next step.
 
@@ -525,6 +632,7 @@ def main():
         print(f"[prm] scores cached -> {prm_cache}")
 
     analyse(questions, chains_all, golds, prm_scores, args.blend)
+    sweep_aggregation_rules(chains_all, golds, prm_scores)
 
 
 if __name__ == "__main__":
