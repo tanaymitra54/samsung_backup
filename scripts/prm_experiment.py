@@ -237,6 +237,23 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
                 f"[prm] {qi+1}/{total} questions  ({el:.0f}s elapsed, ETA {eta:.0f}s)",
                 flush=True,
             )
+
+    # Always report throughput, including for short --limit runs that never hit
+    # the every-10 checkpoint. This number decides whether PRM scoring is
+    # affordable INSIDE the training loop (scoring every chain, every round) or
+    # only as an offline analysis pass -- a real architectural fork.
+    el = time.time() - t0
+    n_chains = sum(len(c) for c in chains_all)
+    print(
+        f"\n[prm] scored {n_chains} chains from {total} questions in {el:.0f}s "
+        f"({el / max(n_chains, 1):.2f}s per chain)",
+        flush=True,
+    )
+    print(
+        f"[prm] extrapolated to a full 300-question pool (6000 chains): "
+        f"{el / max(n_chains, 1) * 6000 / 60:.0f} min",
+        flush=True,
+    )
     return all_scores
 
 
@@ -305,6 +322,47 @@ def analyse(questions, chains_all, golds, prm_scores, blend_weights):
                 "cons_majority": sum(r["cons"] for r in majr) / len(majr),
                 "prm_argmax_ok": max(rows, key=lambda r: r["prm"])["ok"],
             })
+
+    # ── Discrimination: can the PRM tell correct chains from wrong ones? ─────
+    #
+    # Reported before the strategy table because it is the precondition for all
+    # of them. A PRM that scores nearly everything ~1.0 carries no ranking
+    # information no matter how it is aggregated or blended, and the smoke run
+    # showed scores clustered in 0.977-1.0 on easy questions. AUC here is the
+    # probability that a randomly chosen CORRECT chain outranks a randomly
+    # chosen INCORRECT one: 0.5 is coin-flip, 1.0 is perfect separation.
+    pos, neg = [], []
+    for qi, (chains, gold) in enumerate(zip(chains_all, golds)):
+        for c, p in zip(chains, prm_scores[qi]):
+            a = chain_answer(c)
+            if a is None:
+                continue
+            (pos if numeric_match(a, gold) else neg).append(float(p))
+
+    print("\n" + "=" * 64)
+    print("  PRM DISCRIMINATION  (all chains pooled)")
+    print("=" * 64)
+    if pos and neg:
+        import statistics
+        auc = sum(
+            1.0 if p > q else 0.5 if p == q else 0.0
+            for p in pos for q in neg
+        ) / (len(pos) * len(neg))
+        print(f"  correct chains   n={len(pos):<6} mean={statistics.mean(pos):.3f} "
+              f"sd={statistics.pstdev(pos):.3f}")
+        print(f"  incorrect chains n={len(neg):<6} mean={statistics.mean(neg):.3f} "
+              f"sd={statistics.pstdev(neg):.3f}")
+        print(f"  AUC (P[correct scores above incorrect]) = {auc:.3f}")
+        if auc < 0.6:
+            print("  -> WEAK. The PRM barely ranks correct above incorrect, so no")
+            print("     aggregation or blend will rescue it. Suspect segmentation or")
+            print("     try --aggregation prod/mean before anything else.")
+        elif auc < 0.75:
+            print("  -> MODERATE. Real signal, but expect modest gains.")
+        else:
+            print("  -> STRONG. This is a usable selection signal.")
+    else:
+        print("  (need both correct and incorrect chains to measure separation)")
 
     # ── Headline table ───────────────────────────────────────────────────────
     print("\n" + "=" * 64)
