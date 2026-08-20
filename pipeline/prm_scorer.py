@@ -66,7 +66,7 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 # Step-boundary token used by the Qwen2.5-Math-PRM family.
 _QWEN_STEP_SEP = "<extra_0>"
@@ -103,12 +103,40 @@ class PRMScorer:
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name, cache_dir=cache_dir, trust_remote_code=True
         )
-        self.model = AutoModel.from_pretrained(
-            model_name,
-            cache_dir=cache_dir,
-            torch_dtype=torch.bfloat16 if use_cuda else torch.float32,
-            trust_remote_code=True,
-        ).to(self.device)
+
+        # Qwen2.5-Math-PRM ships its own modeling code (trust_remote_code), and
+        # that code reads `config.pad_token_id` directly. Recent transformers
+        # moved the generation-related token ids off PretrainedConfig, so the
+        # attribute no longer exists and model construction dies with
+        # "'Qwen2RMConfig' object has no attribute 'pad_token_id'".
+        #
+        # Loading the config explicitly and setting the attribute ourselves fixes
+        # it without pinning transformers or patching the vendored model file:
+        # once it is in the config's __dict__, the remote code finds it.
+        config = AutoConfig.from_pretrained(
+            model_name, cache_dir=cache_dir, trust_remote_code=True
+        )
+        if getattr(config, "pad_token_id", None) is None:
+            pad_id = self.tokenizer.pad_token_id
+            if pad_id is None:
+                pad_id = self.tokenizer.eos_token_id
+            config.pad_token_id = pad_id
+
+        load_kwargs = {
+            "cache_dir": cache_dir,
+            "config": config,
+            "torch_dtype": torch.bfloat16 if use_cuda else torch.float32,
+            "trust_remote_code": True,
+        }
+        if use_cuda:
+            # Place shards straight onto the GPU instead of materialising the
+            # whole 7B on CPU first and then copying it across.
+            load_kwargs["device_map"] = {"": self.device.index or 0}
+            load_kwargs["low_cpu_mem_usage"] = True
+
+        self.model = AutoModel.from_pretrained(model_name, **load_kwargs)
+        if not use_cuda:
+            self.model = self.model.to(self.device)
         self.model.eval()
 
         sep_ids = self.tokenizer.encode(_QWEN_STEP_SEP, add_special_tokens=False)
@@ -183,8 +211,23 @@ class PRMScorer:
             outputs = self.model(input_ids=enc["input_ids"])
 
         # Qwen2.5-Math-PRM returns a 2-class logit per position; class 1 is
-        # "this step is correct".
-        logits = outputs[0] if isinstance(outputs, (tuple, list)) else outputs.logits
+        # "this step is correct". Its vendored modeling code returns a bare
+        # tuple/tensor rather than a standard ModelOutput with `.logits`, and
+        # ModelOutput itself supports [0] indexing, so probe in that order
+        # instead of assuming either shape.
+        if torch.is_tensor(outputs):
+            logits = outputs
+        elif hasattr(outputs, "logits") and outputs.logits is not None:
+            logits = outputs.logits
+        else:
+            logits = outputs[0]
+
+        if logits.shape[-1] != 2:
+            raise ValueError(
+                f"{self.model_name} produced a final dimension of {logits.shape[-1]}, "
+                "expected 2 (incorrect/correct). This scorer assumes the "
+                "Qwen2.5-Math-PRM 2-class step head."
+            )
         probs = F.softmax(logits.float(), dim=-1)[..., 1]  # (1, seq)
 
         mask = enc["input_ids"] == self.step_sep_id

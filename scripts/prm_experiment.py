@@ -140,11 +140,26 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
     all_scores: list[list[float]] = []
     t0 = time.time()
     total = len(chains_all)
+    shown = False
     for qi, (question, chains) in enumerate(zip(questions, chains_all)):
         scores = []
-        for chain in chains:
-            s, _steps = scorer.score_chain(question, chain.get("reason", ""))
+        for ci, chain in enumerate(chains):
+            s, steps = scorer.score_chain(question, chain.get("reason", ""))
             scores.append(s)
+
+            # On a --limit smoke run, show one chain's per-step vector. A PRM
+            # given bad step boundaries still returns numbers, so the only way
+            # to catch mis-segmentation is to look at the steps it graded.
+            if args.limit and not shown and ci == 0:
+                shown = True
+                print(f"\n[prm] sample grading, question {qi}, chain 0:")
+                print(f"      aggregate ({scorer.aggregation}) = {s:.3f}")
+                print(f"      {len(steps)} steps graded: "
+                      f"{[round(p, 3) for p in steps]}")
+                for j, seg in enumerate(scorer.split_steps(chain.get('reason', ''))[:6]):
+                    p = f"{steps[j]:.3f}" if j < len(steps) else "  -  "
+                    print(f"        [{p}] {seg[:70]}")
+                print()
         all_scores.append(scores)
 
         if (qi + 1) % 10 == 0:
@@ -327,6 +342,12 @@ def main():
     ap.add_argument("--cache-dir", default="./cache/models")
     ap.add_argument("--analyze-only", action="store_true",
                     help="Skip PRM scoring; analyse an existing --prm-cache.")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="Only score the first N questions. Use a small value (e.g. 5) "
+                         "to confirm the model loads and produces sane per-step scores "
+                         "before committing to the full pass. Scores from a limited run "
+                         "are written to a --prm-cache suffixed with the limit, so they "
+                         "can never be mistaken for a complete scoring pass.")
     ap.add_argument("--blend", nargs="*", type=float, default=[0.5],
                     help="Reserved: PRM/consensus blend weights to sweep in analysis.")
     args = ap.parse_args()
@@ -350,6 +371,16 @@ def main():
         n = len(golds)
 
     prm_cache = Path(args.prm_cache)
+    if args.limit:
+        n = min(args.limit, n)
+        chains_all, golds, questions = chains_all[:n], golds[:n], questions[:n]
+        # Separate cache file: a partial pass must never be reused as if it were
+        # the full 300-question scoring run.
+        prm_cache = prm_cache.with_name(f"{prm_cache.stem}_limit{n}{prm_cache.suffix}")
+        print(f"[data] --limit {args.limit}: scoring only the first {n} questions")
+        print(f"[data] partial results -> {prm_cache}")
+        print("[data] NOTE: the recoverable-set analysis needs the full 300 to be "
+              "meaningful; this run is a plumbing check only.")
     if args.analyze_only:
         if not prm_cache.exists():
             print(f"[error] --analyze-only but {prm_cache} does not exist.", file=sys.stderr)
