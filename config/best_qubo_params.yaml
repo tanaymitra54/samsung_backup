@@ -1,50 +1,14 @@
-# ==============================================================================
-# FILE: config/best_qubo_params.yaml
-# ROLE: Optimal QUBO Hyperparameter Configuration
-#
-# ############################################################################
-# # SUPERSEDED -- these values are NOT applied while `stale: true`.          #
-# ############################################################################
-#
-# The search that produced them is invalid on three independent counts:
-#
-#  1. ANSWER-KEY LEAKAGE. Chains were scored with the gold answer visible
-#     (tune_qubo_params.py passed gold to the verifier), so the winning
-#     combination is the one that best exploits an oracle the deployed pipeline
-#     never has. Evaluation is now gold-free, so these weights optimise a
-#     regime that no longer exists.
-#
-#  2. UNREACHABLE GRID. The old grid searched cardinality_penalty over
-#     [0.05, 0.1, 0.2] against penalty_weight up to 1.5. At those ratios the
-#     pairwise redundancy penalty always swamps the soft k-constraint, so EVERY
-#     combination in the search selects a single chain -- the multi-chain CoT
-#     scaffold the method depends on never engaged. cardinality_penalty=0.05
-#     below is the worst case of this. The grid now searches 0.2-1.2.
-#
-#  3. NO STATISTICAL POWER. validation_accuracy 0.7778 came from a
-#     10-question validation set (standard error about +/-13 points), with only
-#     52 of 81 combinations evaluated. The notes themselves record that all
-#     pw=1.0 combinations "scored identically" -- i.e. the search could not
-#     discriminate between them at all.
-#
-# TO REGENERATE (gold-free, widened grid, adequate sample):
-#     python scripts/tune_qubo_params.py --num-questions 300
-#
-# Then set `stale: false` so load_config() applies the result. Until then the
-# pipeline uses the values in config/config.yaml, whose cardinality_penalty was
-# chosen by measurement rather than by this search.
-# ==============================================================================
-
-stale: true
-
+stale: false
 penalty_weight: 1.0
-diversity_bonus: 0.1
-cardinality_penalty: 0.05
-answer_agree_weight: 0.3
-answer_sim_weight: 0.7
-validation_accuracy: 0.7778
-notes: |
-  SUPERSEDED. Derived from a partial grid search (52/81 combos) on a 10-question
-  validation set, scored with the gold answer visible, over a cardinality_penalty
-  range too small to ever select more than one chain. Retained only for
-  provenance. Re-run tune_qubo_params.py and set stale: false.
+diversity_bonus: 0.5
+cardinality_penalty: 2.5
+answer_agree_weight: 0.1
+answer_sim_weight: 0.9
+validation_accuracy: 0.903333
+n_questions: 300
+scoring: gold-free
+combo_scoring: proxy
+notes: Grid search over 300 questions, gold-free scoring, combo accuracy via proxy
+  (majority vote over selected chains, no generation). Accuracy standard error about
+  +/-2.9 points. Verify the selected cardinality_penalty yields a multi-chain subset;
+  run_all_benchmarks.py warns if the mean drops below 2.
