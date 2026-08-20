@@ -169,8 +169,23 @@ def _explain_vendored_code_failure(exc: Exception, args, stage: str) -> None:
 
 def score_with_prm(questions, chains_all, args) -> list[list[float]]:
     """One PRM forward pass per chain. Cached to disk -- this is the only slow part."""
-    from pipeline.prm_scorer import PRMScorer
     import time
+
+    # Load prm_scorer.py BY FILE PATH rather than as pipeline.prm_scorer.
+    #
+    # `from pipeline.prm_scorer import ...` executes pipeline/__init__.py, which
+    # imports qubo_builder -> sentence_transformers -> the full training stack.
+    # This script is designed to run in a throwaway pinned-transformers venv
+    # holding only what the PRM needs, so dragging in those dependencies would
+    # force that venv to mirror the entire project environment -- defeating the
+    # point of isolating it. prm_scorer.py imports nothing from this package
+    # (only torch + transformers), so loading the file directly is safe.
+    import importlib.util
+    _prm_path = _PROJECT_ROOT / "pipeline" / "prm_scorer.py"
+    _spec = importlib.util.spec_from_file_location("_prm_scorer_standalone", _prm_path)
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    PRMScorer = _mod.PRMScorer
 
     print(f"[prm] loading {args.prm_model} (aggregation={args.aggregation}) ...", flush=True)
     try:
