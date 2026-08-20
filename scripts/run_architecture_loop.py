@@ -306,6 +306,90 @@ def stage_dpo(args, round_idx: int, data_dir: Path, sft_adapter: str) -> str | N
     return str(dpo_adapter)
 
 
+# ── Regression gate (catastrophic-forgetting guard) ──────────────────────────
+
+def _qubo_acc(acc: dict, benchmark: str) -> float | None:
+    return (acc.get(benchmark) or {}).get("qubo")
+
+
+def mean_qubo(acc: dict, benchmarks: list[str]) -> float:
+    vals = [_qubo_acc(acc, b) for b in benchmarks]
+    vals = [v for v in vals if v is not None]
+    return sum(vals) / len(vals) if vals else -1.0
+
+
+def benchmark_deltas(baseline: dict | None, candidate: dict,
+                     benchmarks: list[str]) -> dict[str, float]:
+    """Per-benchmark change vs the base model, in accuracy points."""
+    if not baseline:
+        return {}
+    out = {}
+    for b in benchmarks:
+        base_v, cand_v = _qubo_acc(baseline, b), _qubo_acc(candidate, b)
+        if base_v is not None and cand_v is not None:
+            out[b] = cand_v - base_v
+    return out
+
+
+def worst_regression(deltas: dict[str, float]) -> tuple[str | None, float]:
+    """The benchmark that lost the most ground, and by how much (<=0 means loss)."""
+    if not deltas:
+        return None, 0.0
+    b = min(deltas, key=lambda k: deltas[k])
+    return b, deltas[b]
+
+
+def choose_adapter(candidates: list[tuple[str, str, dict]], baseline: dict | None,
+                   benchmarks: list[str], max_regression: float) -> tuple[str, str, str]:
+    """Pick which arm to carry forward, refusing to reward catastrophic forgetting.
+
+    candidates: list of (arm_name, adapter_path, accuracy_dict).
+
+    Selecting purely on MEAN accuracy -- what this did before -- rewards exactly
+    the failure mode we care about: an adapter that gains 15 points on GSM8K and
+    loses 10 on MMLU has a better mean than one that gains 3 everywhere, so the
+    loop would carry the forgetful model forward and compound the damage over
+    rounds. A candidate is "safe" only if no individual benchmark has fallen more
+    than max_regression below the BASE model; ties among safe candidates are then
+    broken on mean. If nothing is safe, the least-damaging arm is carried forward
+    with a loud warning rather than silently.
+
+    Returns (arm_name, adapter_path, reason).
+    """
+    scored = []
+    for name, path, acc in candidates:
+        deltas = benchmark_deltas(baseline, acc, benchmarks)
+        wb, wd = worst_regression(deltas)
+        scored.append({
+            "name": name, "path": path, "acc": acc,
+            "mean": mean_qubo(acc, benchmarks),
+            "worst_bench": wb, "worst_delta": wd,
+            "safe": (not deltas) or wd >= -max_regression,
+        })
+
+    safe = [s for s in scored if s["safe"]]
+    pool = safe if safe else scored
+    winner = max(pool, key=lambda s: s["mean"])
+
+    if safe:
+        reason = f"best mean among arms with no benchmark down >{max_regression:.1%}"
+    else:
+        reason = (f"NO arm cleared the regression gate; carrying the least-damaging "
+                  f"({winner['worst_bench']} {winner['worst_delta']:+.1%})")
+    return winner["name"], winner["path"], reason
+
+
+def report_regression(label: str, deltas: dict[str, float], max_regression: float) -> None:
+    if not deltas:
+        return
+    parts = []
+    for b, d in deltas.items():
+        flag = "  <-- REGRESSION" if d < -max_regression else ""
+        parts.append(f"      {b:<16}{d:+7.1%}{flag}")
+    print(f"    {label} vs base model:")
+    print("\n".join(parts))
+
+
 # ── Failure-targeted curriculum ──────────────────────────────────────────────
 
 def collect_failed_questions(results_dir: Path, label: str, benchmarks: list[str]) -> list[dict]:
@@ -482,6 +566,15 @@ def parse_args():
     p.add_argument("--focus-repeat", type=int, default=2,
                    help="How many times each hard question is re-added (default: 2)")
 
+    # Catastrophic-forgetting guard
+    p.add_argument("--max-regression", type=float, default=0.03,
+                   help="Largest per-benchmark drop vs the BASE model that an adapter "
+                        "may have and still be carried forward (default 0.03 = 3 points). "
+                        "Selection was previously on mean accuracy alone, which rewards "
+                        "an adapter that gains 15 points on one benchmark while losing 10 "
+                        "on another. Requires --baseline to have a reference to compare "
+                        "against. Set to 1.0 to disable the gate entirely.")
+
     # DPO (optional stage after SFT in each round)
     p.add_argument("--dpo", action="store_true",
                    help="After SFT, extract preference pairs and run DPO from the SFT policy. "
@@ -535,9 +628,11 @@ def main():
     print("=" * 70)
 
     # ── Round 0: base SLM, no adapter ────────────────────────────────────────
+    baseline_accuracy: dict | None = None
     if args.baseline:
         base_results = loop_root / "round0_baseline" / "results"
         accuracy = stage_evaluate(args, base_results, "base", None)
+        baseline_accuracy = accuracy
         manifest["rounds"].append({
             "label": "round 0",
             "adapter": None,
@@ -545,6 +640,10 @@ def main():
             "accuracy": accuracy,
         })
         _save_manifest(manifest_path, manifest)
+    else:
+        print("[Loop] WARNING: no --baseline. Without a base-model reference the "
+              "regression gate cannot detect catastrophic forgetting, so adapters "
+              "are selected on mean accuracy alone.")
 
     # ── Closed loop ──────────────────────────────────────────────────────────
     adapter_path: str | None = None
@@ -580,35 +679,51 @@ def main():
 
         # B2 + C again: optional DPO arm, evaluated the same way.
         best_adapter = new_adapter
+        best_arm = "sft"
+        arms: list[tuple[str, str, dict]] = [("sft", new_adapter, accuracy)]
+
         if args.dpo:
             dpo_adapter = stage_dpo(args, round_idx, data_dir, new_adapter)
             if dpo_adapter:
                 dpo_accuracy = stage_evaluate(args, results_dir, "dpo", dpo_adapter)
                 record["dpo_adapter"] = dpo_adapter
                 record["dpo_accuracy"] = dpo_accuracy
+                arms.append(("dpo", dpo_adapter, dpo_accuracy))
 
-                # Carry forward whichever arm actually scored better on the QUBO
-                # path, averaged over benchmarks, so the next round samples from
-                # the stronger model rather than assuming DPO always wins.
-                def _mean_qubo(acc: dict) -> float:
-                    vals = [(acc.get(b) or {}).get("qubo") for b in args.benchmarks]
-                    vals = [v for v in vals if v is not None]
-                    return sum(vals) / len(vals) if vals else -1.0
+        # Carry forward under the regression gate rather than on mean alone.
+        print(f"\n[Loop] Round {round_idx} arm comparison:")
+        for name, _path, acc in arms:
+            deltas = benchmark_deltas(baseline_accuracy, acc, args.benchmarks)
+            print(f"    {name.upper():<4} mean QUBO {mean_qubo(acc, args.benchmarks):.2%}")
+            report_regression(name.upper(), deltas, args.max_regression)
+            record[f"{name}_mean_qubo"] = mean_qubo(acc, args.benchmarks)
+            record[f"{name}_deltas_vs_base"] = deltas
 
-                sft_mean, dpo_mean = _mean_qubo(accuracy), _mean_qubo(dpo_accuracy)
-                record["sft_mean_qubo"] = sft_mean
-                record["dpo_mean_qubo"] = dpo_mean
-                if dpo_mean > sft_mean:
-                    best_adapter = dpo_adapter
-                print(
-                    f"[Loop] Round {round_idx} mean QUBO accuracy -- "
-                    f"SFT {sft_mean:.2%} vs DPO {dpo_mean:.2%}; "
-                    f"carrying forward {'DPO' if best_adapter == dpo_adapter else 'SFT'}."
-                )
+        best_arm, best_adapter, why = choose_adapter(
+            arms, baseline_accuracy, args.benchmarks, args.max_regression
+        )
+        record["carry_forward_reason"] = why
+        print(f"[Loop] Carrying forward {best_arm.upper()} -- {why}.")
+
+        # A regression that survives the gate still matters: it compounds every
+        # round, since the next round samples its training data FROM this model.
+        winning_acc = next(acc for name, _p, acc in arms if name == best_arm)
+        winning_deltas = benchmark_deltas(baseline_accuracy, winning_acc, args.benchmarks)
+        wb, wd = worst_regression(winning_deltas)
+        if wb is not None and wd < -args.max_regression:
+            print(
+                f"[Loop] *** CATASTROPHIC FORGETTING WARNING ***\n"
+                f"       {wb} is {wd:+.1%} vs the base model, past the "
+                f"{args.max_regression:.1%} tolerance.\n"
+                f"       The next round samples its training data from this model, so\n"
+                f"       this loss will compound. Consider stopping, widening the\n"
+                f"       training mix beyond math, or lowering --lr / --epochs."
+            )
 
         # Record which questions the pipeline still gets wrong, so the next round
         # can be pointed at them (failure-targeted curriculum).
-        eval_label = "dpo" if (args.dpo and record.get("dpo_adapter") and best_adapter != new_adapter) else "sft"
+        # Harvest failures from whichever arm is actually being carried forward.
+        eval_label = best_arm
         failed = collect_failed_questions(results_dir, eval_label, args.benchmarks)
         failures_path = round_dir / "failed_questions.json"
         with open(failures_path, "w", encoding="utf-8") as f:
