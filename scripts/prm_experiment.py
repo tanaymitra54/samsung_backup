@@ -595,8 +595,23 @@ def main():
     n = len(chains_all)
     print(f"[data] {n} questions x {len(chains_all[0])} chains from {chains_path}")
 
-    golds = load_golds(n)
-    questions = load_questions(n)
+    # Prefer questions/golds stored INSIDE the cache (build_chain_cache.py writes
+    # them). Re-deriving them by reloading GSM8K -- the only option for the
+    # original cache, which did not store them -- assumes the consumer filters
+    # and orders the dataset identically to the producer. That happens to hold
+    # for GSM8K but silently misaligns golds with chains for any other dataset,
+    # which would corrupt every number without raising anything.
+    if "golds" in data and "questions" in data:
+        golds = data["golds"]
+        questions = data["questions"]
+        print(f"[data] using questions/golds stored in the cache "
+              f"(dataset={data.get('dataset', 'unknown')})")
+    else:
+        print("[data] cache has no inline golds; falling back to re-deriving them "
+              "from GSM8K. Valid only if this pool IS GSM8K in the original order.")
+        golds = load_golds(n)
+        questions = load_questions(n)
+
     if len(golds) < n:
         print(f"[warn] only {len(golds)} golds for {n} cached questions; truncating.")
         chains_all = chains_all[:len(golds)]
