@@ -12,6 +12,30 @@ import argparse
 import os
 import json
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def _mask_gpu_from_argv():
+    """Restrict CUDA visibility to one GPU before torch (or unsloth, which
+    imports torch) is ever imported -- once a CUDA context exists the
+    visible device list is fixed for the process. Without this, HF's
+    DPOTrainer resolves its own training device independently of wherever
+    the model was actually placed and lands on cuda:0 regardless, which
+    OOMs if cuda:0 happens to be the saturated card on a shared machine.
+    Scans sys.argv directly since argparse hasn't run yet at this point.
+    """
+    requested = None
+    for idx, arg in enumerate(sys.argv):
+        if arg == "--device" and idx + 1 < len(sys.argv):
+            requested = sys.argv[idx + 1]
+            break
+    from pipeline.device_utils import mask_cuda_visible_devices
+    mask_cuda_visible_devices(requested)
+
+
+_mask_gpu_from_argv()
 
 # Unsloth patches transformers/peft/trl at import time, so it must be imported
 # before any of them -- importing it after (e.g. inside main(), once argparse
@@ -26,7 +50,6 @@ else:
 
 import torch
 import yaml
-from pathlib import Path
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -40,7 +63,6 @@ except ImportError:
 
 from trl import DPOTrainer, DPOConfig
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline.device_utils import resolve_device
 
 def main():
