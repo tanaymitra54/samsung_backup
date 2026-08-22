@@ -40,6 +40,9 @@ except ImportError:
 
 from trl import DPOTrainer, DPOConfig
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pipeline.device_utils import resolve_device
+
 def main():
     parser = argparse.ArgumentParser(description="Run DPO fine-tuning using preference pairs")
     parser.add_argument("--config", default="config/config.yaml", help="Path to config.yaml")
@@ -51,6 +54,10 @@ def main():
     parser.add_argument("--batch-size", type=int, default=2, help="Per device batch size")
     parser.add_argument("--lora-rank", type=int, default=32, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=int, default=64, help="LoRA alpha")
+    parser.add_argument(
+        "--device", default=None,
+        help="cuda:0 / cpu. Default: auto-pick the GPU with the most free VRAM.",
+    )
     parser.add_argument(
         "--resume", action="store_true",
         help="Resume from the newest per-epoch checkpoint in --output-dir",
@@ -120,8 +127,14 @@ def main():
     train_ds = Dataset.from_dict(formatted_rows)
     print(f"[DPO] Loaded {len(train_ds)} preference pairs.")
 
-    use_cuda = torch.cuda.is_available()
+    device = resolve_device(args.device)
+    use_cuda = device.type == "cuda"
+    if use_cuda:
+        # Also covers the Unsloth path below, which has no device_map kwarg
+        # and otherwise defaults to whatever torch.cuda.current_device() is.
+        torch.cuda.set_device(device.index or 0)
     use_bf16 = use_cuda and torch.cuda.is_bf16_supported()
+    print(f"[DPO] Device: {device}")
 
     print(f"[DPO] Loading model {model_name}...")
 
@@ -140,7 +153,10 @@ def main():
     else:
         mkw = {
             "cache_dir": cache_dir,
-            "device_map": "auto" if use_cuda else None,
+            # Pinned to the one selected GPU rather than "auto": accelerate's
+            # "auto" placement ignores which card we picked as most-free and
+            # spreads/chooses across every visible device instead.
+            "device_map": {"": device.index or 0} if use_cuda else None,
             "torch_dtype": torch.bfloat16 if use_bf16 else torch.float16,
         }
         model = AutoModelForCausalLM.from_pretrained(model_name, **mkw)

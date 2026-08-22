@@ -132,7 +132,7 @@ training:
     warmup_steps: 100
 
 evaluation:
-    device: "cuda:0"
+    device: null  # null = auto-pick the GPU with the most free VRAM (see pipeline/device_utils.py)
     benchmarks:
         - "gsm8k"
         - "bbh"

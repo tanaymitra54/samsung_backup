@@ -212,6 +212,7 @@ def _write_sft_script(path: Path, args, train_file: Path, val_file: Path,
 from pathlib import Path
 sys.path.insert(0, {repr(repo)})
 
+from pipeline.device_utils import resolve_device
 import yaml
 import inspect
 from datasets import Dataset
@@ -326,7 +327,15 @@ if not val_raw_gsm8k:
 val_raw_eval = val_raw_gsm8k[:40] # max 40 for speed
 
 # ── Step 3: Load model ────────────────────────────────────────────────
-use_cuda = torch.cuda.is_available()
+# Auto-picks whichever visible GPU currently has the most free VRAM instead
+# of torch.cuda.current_device() (which is just whichever card happens to be
+# device 0), so a busy card on a shared machine isn't where this lands.
+device = resolve_device()
+use_cuda = device.type == "cuda"
+if use_cuda:
+    # Also covers the Unsloth path below, which has no device_map kwarg and
+    # otherwise defaults to whatever torch.cuda.current_device() is.
+    torch.cuda.set_device(device.index or 0)
 use_bf16 = use_cuda and torch.cuda.is_bf16_supported()
 
 # 4-bit was unconditional on CUDA, which is the right default for a consumer
@@ -339,7 +348,7 @@ if not use_cuda:
 elif FORCE_4BIT:
     use_4bit = True
 else:
-    _vram_gb = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / 1e9
+    _vram_gb = torch.cuda.get_device_properties(device.index or 0).total_memory / 1e9
     use_4bit = _vram_gb < 24.0
     print(f"[SFT] GPU has {{_vram_gb:.0f}} GB -> "
           f"{{'4-bit QLoRA' if use_4bit else 'bf16 LoRA (no quantisation needed)'}}")
@@ -403,7 +412,7 @@ else:
     # silent offload.
     mkw = {{
         "cache_dir":   cache_dir,
-        "device_map":  {{"": torch.cuda.current_device()}} if use_cuda else None,
+        "device_map":  {{"": device.index or 0}} if use_cuda else None,
         "torch_dtype": torch.bfloat16 if use_bf16 else (torch.float16 if use_cuda else torch.float32),
         "low_cpu_mem_usage": True,
     }}

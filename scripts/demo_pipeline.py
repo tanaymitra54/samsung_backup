@@ -38,9 +38,11 @@ REQUIREMENTS:
 """
 
 # ── stdlib ────────────────────────────────────────────────────────────────────
-import re, sys, ast, io, math, time, textwrap, random, gc
+import os, re, sys, ast, io, math, time, textwrap, random, gc
 from typing import Optional
 from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Force UTF-8 output on Windows terminals
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -53,6 +55,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import AutoModelForSequenceClassification
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+
+from pipeline.device_utils import resolve_device
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,11 +175,14 @@ class ModelBundle:
         banner("LOADING MODELS", char="=")
 
         # ── Device selection ──────────────────────────────────────────────────
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-            note(f"CUDA device detected: {torch.cuda.get_device_name(0)} — using GPU.")
+        # Auto-picks whichever visible GPU currently has the most free VRAM
+        # instead of always grabbing cuda:0 (see pipeline/device_utils.py).
+        self.device = resolve_device()
+        if self.device.type == "cuda":
+            idx = self.device.index or 0
+            torch.cuda.set_device(idx)
+            note(f"CUDA device detected: {torch.cuda.get_device_name(idx)} (cuda:{idx}) — using GPU.")
         else:
-            self.device = torch.device("cpu")
             warn("No CUDA GPU found — running on CPU.  Generation will be slow (~1-2 min/chain).")
 
         # ── 1. Qwen 2.5 3B Instruct ──────────────────────────────────────────
@@ -196,7 +203,10 @@ class ModelBundle:
 
         load_kwargs = {"trust_remote_code": True, "low_cpu_mem_usage": True}
         if self.device.type == "cuda":
-            load_kwargs["device_map"] = "auto"
+            # Pinned to the one selected GPU rather than "auto": accelerate's
+            # "auto" placement ignores which card we picked as most-free and
+            # spreads/chooses across every visible device instead.
+            load_kwargs["device_map"] = {"": self.device.index or 0}
             load_kwargs["torch_dtype"] = torch.float16
         else:
             load_kwargs["torch_dtype"] = torch.float32

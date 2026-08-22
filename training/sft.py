@@ -14,6 +14,8 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer
 
+from pipeline.device_utils import resolve_device
+
 
 class QUBOSFTTrainer:
     def __init__(self, config_path: str = "config/config.yaml"):
@@ -42,7 +44,8 @@ class QUBOSFTTrainer:
         self.warmup_steps = train_cfg.get("warmup_steps", 100)
         self.iterative_rounds = train_cfg.get("iterative_rounds", 3)
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device_obj = resolve_device(model_cfg.get("device"))
+        self.device = self._device_obj.type
 
     def _build_bnb_config(self):
         if not self.load_in_4bit or self.device != "cuda":
@@ -61,7 +64,11 @@ class QUBOSFTTrainer:
         bnb_config = self._build_bnb_config()
         model_kwargs = {
             "cache_dir": self.cache_dir,
-            "device_map": "auto" if self.device == "cuda" else None,
+            # Pinned to the one selected GPU rather than "auto": accelerate's
+            # "auto" placement ignores which card we picked as most-free and
+            # spreads/chooses across every visible device instead, which is
+            # also what silently offloads to CPU/disk and breaks 4-bit loading.
+            "device_map": {"": self._device_obj.index or 0} if self.device == "cuda" else None,
             "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
         }
         if bnb_config:

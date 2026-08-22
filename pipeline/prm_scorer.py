@@ -68,6 +68,8 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
+from pipeline.device_utils import resolve_device
+
 # Step-boundary token used by the Qwen2.5-Math-PRM family.
 _QWEN_STEP_SEP = "<extra_0>"
 
@@ -139,9 +141,7 @@ class PRMScorer:
         self.max_length = max_length
         self.model_name = model_name
 
-        self.device = torch.device(
-            device or ("cuda:0" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = resolve_device(device)
         use_cuda = self.device.type == "cuda"
 
         self.tokenizer = AutoTokenizer.from_pretrained(

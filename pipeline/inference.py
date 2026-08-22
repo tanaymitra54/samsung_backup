@@ -151,7 +151,10 @@ class InferencePipeline:
             "low_cpu_mem_usage": True,
         }
         if self.device.type == "cuda":
-            model_kwargs["device_map"] = "auto"
+            # Pinned to the one selected GPU rather than "auto": accelerate's
+            # "auto" placement ignores which card we picked as most-free and
+            # spreads/chooses across every visible device instead.
+            model_kwargs["device_map"] = {"": self.device.index or 0}
             if load_in_4bit:
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
