@@ -190,7 +190,10 @@ def sweep_aggregation_rules(chains_all, golds, prm_scores) -> None:
             )[0]
         return out
 
-    tallies = defaultdict(int)
+    # Per-question outcomes, not just totals: every rule is evaluated on the
+    # SAME questions, so the comparison against plain voting is PAIRED and must
+    # be tested as such (see the McNemar note below).
+    outcomes: dict[str, list[bool]] = defaultdict(list)
     n = 0
     for qi, (chains, gold) in enumerate(zip(chains_all, golds)):
         rows = []
@@ -202,32 +205,60 @@ def sweep_aggregation_rules(chains_all, golds, prm_scores) -> None:
             continue
         n += 1
         for rule, ans in rules_for(rows).items():
-            tallies[rule] += numeric_match(ans, gold)
+            outcomes[rule].append(bool(numeric_match(ans, gold)))
 
+    tallies = {r: sum(v) for r, v in outcomes.items()}
     base = tallies["count"] / n
-    se = (base * (1 - base) / n) ** 0.5
+    baseline_outcomes = outcomes["count"]
 
-    print("\n" + "=" * 64)
+    def mcnemar_p(rule_outcomes: list[bool]) -> tuple[int, int, float]:
+        """Exact two-sided McNemar test against the plain-voting baseline.
+
+        b = rule right where baseline wrong; c = rule wrong where baseline right.
+        Only discordant questions carry information -- the ones both methods get
+        right or both get wrong say nothing about which is better. Under the null
+        each discordant question is a fair coin, so the exact binomial tail is the
+        p-value. This is far more powerful than comparing two independent
+        proportions, which is what an unpaired standard error assumes and which
+        needlessly discards the pairing this design already has.
+        """
+        from math import comb
+        b = sum(1 for r, base_ok in zip(rule_outcomes, baseline_outcomes) if r and not base_ok)
+        c = sum(1 for r, base_ok in zip(rule_outcomes, baseline_outcomes) if not r and base_ok)
+        tot = b + c
+        if tot == 0:
+            return b, c, 1.0
+        k = min(b, c)
+        p = 2 * sum(comb(tot, i) for i in range(k + 1)) / (2 ** tot)
+        return b, c, min(p, 1.0)
+
+    print("\n" + "=" * 72)
     print("  VOTE-AGGREGATION SWEEP  (same PRM scores, different rules)")
-    print("=" * 64)
-    print(f"  {'rule':<12}{'acc':>8}{'vs count':>11}   {'note':<22}")
-    print("  " + "-" * 56)
+    print("=" * 72)
+    print(f"  {'rule':<11}{'acc':>7}{'vs count':>10}{'b':>5}{'c':>5}{'McNemar p':>11}  {'verdict':<14}")
+    print("  " + "-" * 66)
     for rule, correct in sorted(tallies.items(), key=lambda kv: -kv[1]):
         acc = correct / n
         d = (acc - base) * 100
-        note = ""
         if rule == "count":
-            note = "<- plain majority"
-        elif abs(d) < 2 * se * 100:
-            note = "within noise"
-        elif d > 0:
-            note = "beats baseline"
-        print(f"  {rule:<12}{acc:>7.1%}{d:>+10.1f}   {note:<22}")
-    print("  " + "-" * 56)
-    print(f"  n={n}, 2*SE = +/-{2*se*100:.1f} points. A rule must clear that band")
-    print("  to be distinguishable from plain voting at this sample size.")
-    print("\n  Sweeping ~14 rules on one 300-question pool biases the top entry")
-    print("  upward. Confirm any winner on a fresh pool before adopting it.")
+            print(f"  {rule:<11}{acc:>6.1%}{d:>+9.1f}{'-':>5}{'-':>5}{'-':>11}  {'<- baseline':<14}")
+            continue
+        b, c, p = mcnemar_p(outcomes[rule])
+        if p < 0.01:
+            verdict = "SIGNIFICANT**" if d > 0 else "WORSE**"
+        elif p < 0.05:
+            verdict = "SIGNIFICANT*" if d > 0 else "WORSE*"
+        else:
+            verdict = "not significant"
+        print(f"  {rule:<11}{acc:>6.1%}{d:>+9.1f}{b:>5}{c:>5}{p:>11.4f}  {verdict:<14}")
+    print("  " + "-" * 66)
+    print(f"  n={n}.  b = rule right where voting wrong;  c = rule wrong where voting right.")
+    print("  Exact two-sided McNemar on the discordant questions only -- the correct")
+    print("  test for two methods scored on the SAME questions.")
+    print("\n  Sweeping ~14 rules on one pool biases the top entry upward, and running")
+    print("  14 tests inflates the false-positive rate: at p<0.05 you expect ~0.7")
+    print("  spurious hits by chance. Treat a winner as a hypothesis and confirm it")
+    print("  on a fresh pool before adopting it.")
 
 
 def _explain_vendored_code_failure(exc: Exception, args, stage: str) -> None:
@@ -366,7 +397,7 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
 
 # ── Analysis ─────────────────────────────────────────────────────────────────
 
-def analyse(questions, chains_all, golds, prm_scores, blend_weights):
+def analyse(questions, chains_all, golds, prm_scores, blend_weights, dataset="unknown"):
     """Compare every selection strategy, then zoom in on the recoverable set."""
     n = len(golds)
 
@@ -473,7 +504,8 @@ def analyse(questions, chains_all, golds, prm_scores, blend_weights):
 
     # ── Headline table ───────────────────────────────────────────────────────
     print("\n" + "=" * 64)
-    print("  SELECTION STRATEGIES  (300 GSM8K questions, 20 chains each)")
+    n_chains = len(chains_all[0]) if chains_all else 0
+    print(f"  SELECTION STRATEGIES  ({dataset}: {n} questions x {n_chains} chains)")
     print("=" * 64)
     for name, c in counts.items():
         marker = ""
@@ -646,7 +678,8 @@ def main():
                        "scores": prm_scores}, f)
         print(f"[prm] scores cached -> {prm_cache}")
 
-    analyse(questions, chains_all, golds, prm_scores, args.blend)
+    analyse(questions, chains_all, golds, prm_scores, args.blend,
+            dataset=data.get("dataset", "gsm8k (assumed)"))
     sweep_aggregation_rules(chains_all, golds, prm_scores)
 
 
