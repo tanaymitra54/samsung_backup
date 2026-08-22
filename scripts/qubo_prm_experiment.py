@@ -211,6 +211,12 @@ def main():
     ap.add_argument("--locus-w", type=float, default=0.5)
     ap.add_argument("--card-w", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--diagnose", action="store_true",
+                    help="Run the controls that separate the two possible causes of a "
+                         "QUBO loss: INFORMATION LOSS from voting over a subset at all, "
+                         "versus BAD SELECTION of which chains to keep. Compares QUBO-k "
+                         "against random-k and greedy-top-k at several k, all collapsed "
+                         "with the same vote rule.")
     args = ap.parse_args()
 
     data = json.load(open(args.chains, encoding="utf-8"))
@@ -302,6 +308,86 @@ def main():
     print("  Equal accuracy means set-selection adds nothing over independent")
     print("  weighting here, however good the underlying signal is.")
     print("  QUBO+PRM vs QUBO no-locus isolates the failure-locus term itself.")
+
+    if args.diagnose:
+        diagnose_subset_size(chains_all, golds, prm_scores, step_scores, args, n)
+
+
+def diagnose_subset_size(chains_all, golds, prm_scores, step_scores, args, n):
+    """Separate INFORMATION LOSS from BAD SELECTION.
+
+    A QUBO subset losing to weighting over the whole pool has two very different
+    possible causes, and they call for opposite responses:
+
+      INFORMATION LOSS -- voting over k chains is simply worse than voting over
+        all 20, regardless of which k are chosen, because a vote is an estimate
+        and estimates sharpen with sample size. If so, RANDOM-k performs about
+        as well as QUBO-k, accuracy climbs monotonically with k, and the whole
+        idea of selecting a subset before aggregating is misconceived for this
+        task -- no better objective can rescue it.
+
+      BAD SELECTION -- subsetting is fine but the QUBO picks the wrong chains.
+        If so, QUBO-k sits clearly above RANDOM-k, and greedy-top-k by PRM is a
+        useful reference for whether the combinatorial machinery earns its cost
+        over simple ranking.
+
+    The two are confounded in a single k=6 number, which is why they are pulled
+    apart here rather than guessed at.
+    """
+    rng = np.random.default_rng(args.seed)
+    ks = [2, 3, 6, 10, 15, 20]
+
+    rows_per_q = []
+    for qi in range(n):
+        rows = []
+        for c, p, steps in zip(chains_all[qi], prm_scores[qi], step_scores[qi]):
+            a = chain_answer(c)
+            if a is None:
+                continue
+            rows.append({"ans": a, "prm": float(p), "locus": failure_locus(steps)})
+        rows_per_q.append(rows)
+
+    print("\n" + "=" * 70)
+    print("  DIAGNOSTIC: is the loss information loss, or bad selection?")
+    print("=" * 70)
+    print(f"  {'k':>3}  {'QUBO-k':>9}{'greedy-k':>11}{'random-k':>11}   "
+          f"{'QUBO vs random':>15}")
+    print("  " + "-" * 62)
+
+    for k in ks:
+        acc = {"qubo": 0, "greedy": 0, "random": 0}
+        for qi, rows in enumerate(rows_per_q):
+            if not rows:
+                continue
+            gold = golds[qi]
+
+            # QUBO-selected k
+            Q = build_qubo(rows, k, args.diag_w, args.penalty_w,
+                           args.agree_w, args.locus_w, args.card_w)
+            st = solve_qubo(Q, seed=args.seed + qi)
+            picked = [rows[i] for i in range(len(rows)) if st[i] == 1] or rows
+            acc["qubo"] += numeric_match(vote(picked, args.vote_rule), gold)
+
+            # Greedy top-k by PRM -- ranking, no combinatorial structure
+            greedy = sorted(rows, key=lambda r: -r["prm"])[:k]
+            acc["greedy"] += numeric_match(vote(greedy, args.vote_rule), gold)
+
+            # Random k -- isolates the cost of subsetting itself
+            idx = rng.choice(len(rows), size=min(k, len(rows)), replace=False)
+            rand = [rows[i] for i in idx]
+            acc["random"] += numeric_match(vote(rand, args.vote_rule), gold)
+
+        q, g, r = (acc["qubo"] / n, acc["greedy"] / n, acc["random"] / n)
+        print(f"  {k:>3}  {q:>8.1%}{g:>10.1%}{r:>10.1%}   {(q - r) * 100:>+14.1f}")
+
+    print("  " + "-" * 62)
+    print("  READ:")
+    print("    accuracy rising steadily with k, and QUBO ~ random at every k")
+    print("      -> INFORMATION LOSS. Subsetting before aggregating is the wrong")
+    print("         operation for this task; a better objective cannot fix it.")
+    print("    QUBO clearly above random at small k")
+    print("      -> selection works; compare against greedy to see whether the")
+    print("         combinatorial objective earns its cost over plain ranking.")
 
 
 if __name__ == "__main__":
