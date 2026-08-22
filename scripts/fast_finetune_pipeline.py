@@ -122,6 +122,11 @@ def parse_args():
     parser.add_argument("--lora-alpha", type=int,   default=64,   help="LoRA alpha (default: 64, = 2x rank)")
     parser.add_argument("--run-name",   default=None,
                         help="Name for this run (default: qubo-sft-fast-<timestamp>)")
+    parser.add_argument("--4bit", dest="four_bit", action="store_true",
+                        help="Force 4-bit QLoRA. By default quantisation is used only "
+                             "when the GPU has under 24GB -- on an 80GB card a 3B model "
+                             "trains in bf16 with no quantisation, which is faster and "
+                             "avoids the bitsandbytes/accelerate offload failure.")
     parser.add_argument("--unsloth", action="store_true",
                         help="Load the model and apply LoRA via Unsloth's FastLanguageModel "
                              "instead of plain transformers+peft. Free for single-GPU LoRA/QLoRA "
@@ -233,6 +238,7 @@ BATCH_SIZE  = {args.batch_size}
 LORA_RANK   = {args.lora_rank}
 LORA_ALPHA  = {lora_alpha}
 RESUME      = {bool(args.resume_finetune)}
+FORCE_4BIT  = {bool(args.four_bit)}
 QUALITY_THRESHOLD = 0.70   # Only train on QUBO examples with high correctness score
 
 with open(CONFIG_PATH) as f:
@@ -322,7 +328,21 @@ val_raw_eval = val_raw_gsm8k[:40] # max 40 for speed
 # ── Step 3: Load model ────────────────────────────────────────────────
 use_cuda = torch.cuda.is_available()
 use_bf16 = use_cuda and torch.cuda.is_bf16_supported()
-use_4bit = use_cuda
+
+# 4-bit was unconditional on CUDA, which is the right default for a consumer
+# card and the wrong one for an 80GB H100: a 3B model is ~6GB in bf16, so
+# quantising buys nothing and costs accuracy plus the bitsandbytes/accelerate
+# interaction that broke loading. FORCE_4BIT respects an explicit --4bit; the
+# default now quantises only when the visible GPU is genuinely small.
+if not use_cuda:
+    use_4bit = False
+elif FORCE_4BIT:
+    use_4bit = True
+else:
+    _vram_gb = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / 1e9
+    use_4bit = _vram_gb < 24.0
+    print(f"[SFT] GPU has {{_vram_gb:.0f}} GB -> "
+          f"{{'4-bit QLoRA' if use_4bit else 'bf16 LoRA (no quantisation needed)'}}")
 
 peft_cfg = None   # set below on the non-Unsloth path; stays None when Unsloth
                   # has already returned a PEFT-wrapped model, so SFTTrainer
@@ -372,10 +392,20 @@ else:
         )
 
     print(f"[SFT] Loading {{model_name}} (4-bit={{use_4bit}}, bf16={{use_bf16}}) ...")
+    # device_map pins every module to ONE gpu rather than "auto".
+    #
+    # "auto" lets accelerate split the model and spill whatever does not fit to
+    # CPU/disk. bitsandbytes 4-bit refuses that split and aborts with
+    # "Some modules are dispatched on the CPU or the disk", which is what killed
+    # all three curation runs. A 3B model is small enough to sit entirely on one
+    # card in either precision, so there is nothing to gain from sharding, and
+    # pinning turns a genuine capacity problem into an honest OOM instead of a
+    # silent offload.
     mkw = {{
         "cache_dir":   cache_dir,
-        "device_map":  "auto" if use_cuda else None,
+        "device_map":  {{"": torch.cuda.current_device()}} if use_cuda else None,
         "torch_dtype": torch.bfloat16 if use_bf16 else (torch.float16 if use_cuda else torch.float32),
+        "low_cpu_mem_usage": True,
     }}
     if bnb_config:
         mkw["quantization_config"] = bnb_config
