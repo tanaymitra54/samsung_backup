@@ -339,11 +339,18 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
     print("[prm] loaded.", flush=True)
 
     all_scores: list[list[float]] = []
+    # Per-step vectors are kept, not just the aggregate. They are the input to
+    # the complementarity objective: two chains that fail at the SAME point in
+    # their derivation are redundant, whereas chains whose weak steps sit at
+    # different loci genuinely cover for each other. No scalar score can express
+    # that distinction, and recomputing them later would mean another full pass.
+    all_steps: list[list[list[float]]] = []
     t0 = time.time()
     total = len(chains_all)
     shown = False
     for qi, (question, chains) in enumerate(zip(questions, chains_all)):
         scores = []
+        steps_this_q = []
         for ci, chain in enumerate(chains):
             try:
                 s, steps = scorer.score_chain(question, chain.get("reason", ""))
@@ -351,6 +358,7 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
                 _explain_vendored_code_failure(e, args, stage="the first forward pass")
                 raise
             scores.append(s)
+            steps_this_q.append(steps)
 
             # On a --limit smoke run, show one chain's per-step vector. A PRM
             # given bad step boundaries still returns numbers, so the only way
@@ -366,6 +374,7 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
                     print(f"        [{p}] {seg[:70]}")
                 print()
         all_scores.append(scores)
+        all_steps.append(steps_this_q)
 
         if (qi + 1) % 10 == 0:
             el = time.time() - t0
@@ -392,7 +401,7 @@ def score_with_prm(questions, chains_all, args) -> list[list[float]]:
         f"{el / max(n_chains, 1) * 6000 / 60:.0f} min",
         flush=True,
     )
-    return all_scores
+    return all_scores, all_steps
 
 
 # ── Analysis ─────────────────────────────────────────────────────────────────
@@ -670,12 +679,13 @@ def main():
         prm_scores = json.load(open(prm_cache, encoding="utf-8"))["scores"]
         print(f"[prm] reusing existing {prm_cache} (delete it to re-score)")
     else:
-        prm_scores = score_with_prm(questions, chains_all, args)
+        prm_scores, prm_steps = score_with_prm(questions, chains_all, args)
         prm_cache.parent.mkdir(parents=True, exist_ok=True)
         with open(prm_cache, "w", encoding="utf-8") as f:
             json.dump({"model": args.prm_model,
                        "aggregation": args.aggregation,
-                       "scores": prm_scores}, f)
+                       "scores": prm_scores,
+                       "step_scores": prm_steps}, f)
         print(f"[prm] scores cached -> {prm_cache}")
 
     analyse(questions, chains_all, golds, prm_scores, args.blend,
