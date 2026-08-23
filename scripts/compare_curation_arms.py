@@ -139,6 +139,50 @@ def run_arm(arm: str, adapter: Path | None, out_dir: Path, benchmark: str, n: in
         sys.exit(f"[ERROR] Arm '{arm}' failed with exit code {result.returncode}")
 
 
+def results_path(out_dir: Path, arm: str, benchmark: str) -> Path:
+    """Where run_all_benchmarks writes this arm's per-question rows."""
+    return out_dir / f"{arm}_{benchmark}_results.jsonl"
+
+
+def guard_stale_results(out_dir: Path, arms: list[str], benchmark: str,
+                        fresh: bool, reuse_cache: bool) -> None:
+    """Refuse to run on top of result files from a previous run.
+
+    run_all_benchmarks caches per-question rows and RESUMES from them: a
+    partial file means the remaining questions are appended to whatever is
+    already there. That is correct for continuing an interrupted run and
+    catastrophic across adapters -- a file left by an earlier, different
+    adapter gets silently spliced together with rows from the current one and
+    reported as a single arm. Worse, it usually affects only the arm that was
+    interrupted, so the corruption is asymmetric and invisible in the output.
+
+    Nothing in the cache records which adapter produced it, so this cannot be
+    resolved automatically. Stop and make the caller choose.
+    """
+    if fresh or reuse_cache:
+        return
+    existing = [(a, results_path(out_dir, a, benchmark)) for a in arms]
+    existing = [(a, p) for a, p in existing if p.exists()]
+    if not existing:
+        return
+
+    print("[ERROR] Result files already exist for this benchmark:\n")
+    for a, p in existing:
+        rows = sum(1 for line in open(p, encoding="utf-8") if line.strip())
+        print(f"    {a:<10} {rows:>4} rows   {p}")
+    print(
+        "\n  run_all_benchmarks RESUMES from these, appending new questions to\n"
+        "  whatever is already in the file. If they came from a different\n"
+        "  adapter, that arm ends up as a mix of two models and nothing in the\n"
+        "  output will show it.\n"
+        "\n  Choose one:\n"
+        "    --fresh         regenerate from scratch (correct after retraining)\n"
+        "    --reuse-cache   continue an interrupted run of the SAME adapters\n"
+        "    --output-dir X  keep the old results and write somewhere new\n"
+    )
+    sys.exit(1)
+
+
 def load_outcomes(out_dir: Path, arm: str, benchmark: str, mode: str) -> dict[int, bool]:
     """Per-question correctness for one arm, keyed by question id so the arms
     can be aligned. Missing file -> empty, reported by the caller."""
@@ -288,6 +332,13 @@ def main():
                     help="cuda:N / cpu. Default: auto-pick the GPU with the most free VRAM.")
     ap.add_argument("--skip-eval", action="store_true",
                     help="Skip evaluation; just recompute statistics from existing results")
+    ap.add_argument("--fresh", action="store_true",
+                    help="Discard cached per-question results and regenerate. Use this "
+                         "after retraining -- the cache is not keyed on the adapter, so "
+                         "stale rows would be spliced into the new run.")
+    ap.add_argument("--reuse-cache", action="store_true",
+                    help="Continue an interrupted run, reusing cached rows. Only correct "
+                         "when the cache came from the SAME adapters.")
     ap.add_argument("--eval-arg", action="append", default=[],
                     help="Extra flag passed through to run_all_benchmarks.py (repeatable)")
     args = ap.parse_args()
@@ -308,6 +359,10 @@ def main():
             adapter = Path(args.adapter_root) / args.adapter_pattern.format(arm=arm)
             if not adapter.exists():
                 sys.exit(f"[ERROR] Adapter not found for arm '{arm}': {adapter}")
+        guard_stale_results(out_dir, all_arms, args.benchmark,
+                            args.fresh, args.reuse_cache)
+        if args.fresh:
+            args.eval_arg = list(args.eval_arg) + ["--fresh"]
         for arm in all_arms:
             adapter = (None if arm == args.base_arm and not args.no_base
                        else Path(args.adapter_root) / args.adapter_pattern.format(arm=arm))
