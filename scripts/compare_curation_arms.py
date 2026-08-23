@@ -103,9 +103,15 @@ def min_detectable_effect(n: int, p_base: float = 0.30) -> float:
 
 # ── Evaluation ───────────────────────────────────────────────────────────────
 
-def run_arm(arm: str, adapter: Path, out_dir: Path, benchmark: str, n: int,
+def run_arm(arm: str, adapter: Path | None, out_dir: Path, benchmark: str, n: int,
             seed: int, device: str | None, extra: list[str]) -> None:
-    """Evaluate one adapter with run_all_benchmarks.py, labelled by arm."""
+    """Evaluate one adapter with run_all_benchmarks.py, labelled by arm.
+
+    adapter=None evaluates the untuned base model -- the control that says
+    whether the fine-tuning did anything at all. Without it, three arms landing
+    on the same accuracy is indistinguishable between "all curation strategies
+    work equally" and "none of them did anything".
+    """
     cmd = [
         sys.executable, str(_REPO_ROOT / "scripts" / "run_all_benchmarks.py"),
         "--output-dir", str(out_dir),
@@ -119,9 +125,15 @@ def run_arm(arm: str, adapter: Path, out_dir: Path, benchmark: str, n: int,
     cmd += extra
 
     env = dict(os.environ)
-    env["QUBO_ADAPTER_PATH"] = str(adapter)
+    if adapter is None:
+        # Actively clear it: inheriting a stale export would silently turn the
+        # control arm into a fourth adapter run, and it would look plausible.
+        env.pop("QUBO_ADAPTER_PATH", None)
+    else:
+        env["QUBO_ADAPTER_PATH"] = str(adapter)
 
-    print(f"\n{'=' * 70}\n[{arm}] adapter: {adapter}\n[{arm}] {' '.join(cmd)}\n{'=' * 70}")
+    label = str(adapter) if adapter else "(base model -- no adapter)"
+    print(f"\n{'=' * 70}\n[{arm}] adapter: {label}\n[{arm}] {' '.join(cmd)}\n{'=' * 70}")
     result = subprocess.run(cmd, cwd=str(_REPO_ROOT), env=env)
     if result.returncode != 0:
         sys.exit(f"[ERROR] Arm '{arm}' failed with exit code {result.returncode}")
@@ -151,7 +163,8 @@ def load_outcomes(out_dir: Path, arm: str, benchmark: str, mode: str) -> dict[in
 
 # ── Reporting ────────────────────────────────────────────────────────────────
 
-def report(out_dir: Path, arms: list[str], benchmark: str, mode: str) -> None:
+def report(out_dir: Path, arms: list[str], benchmark: str, mode: str,
+           base_arm: str | None = None) -> None:
     per_arm = {a: load_outcomes(out_dir, a, benchmark, mode) for a in arms}
 
     missing = [a for a, o in per_arm.items() if not o]
@@ -212,6 +225,33 @@ def report(out_dir: Path, arms: list[str], benchmark: str, mode: str) -> None:
           f"(80% power).")
     print("  'not resolved' means the data cannot separate the arms -- it is NOT")
     print("  evidence that they perform the same.")
+
+    # The base comparison decides whether anything else in this table is worth
+    # reading: if no arm beats the untuned model, the arms tying with each
+    # other says nothing about curation.
+    if base_arm and base_arm in present:
+        vbase = [per_arm[base_arm][i] for i in ids]
+        beat_base = []
+        for a in present:
+            if a == base_arm:
+                continue
+            va = [per_arm[a][i] for i in ids]
+            _, _, p = mcnemar_exact(va, vbase)
+            if p < 0.05 and sum(va) > sum(vbase):
+                beat_base.append(a)
+        print("\n  " + "-" * 60)
+        if beat_base:
+            print(f"  Arms beating the untuned base at p<0.05: {', '.join(beat_base)}")
+        else:
+            print(f"  NO arm significantly beat the untuned '{base_arm}' model.")
+            print("  Differences between the curation arms are therefore not")
+            print("  interpretable as curation quality -- the fine-tuning itself")
+            print("  has not been shown to do anything on this benchmark.")
+    elif base_arm:
+        print(f"\n  [!] No '{base_arm}' control arm in the results. Without it, arms")
+        print("      tying is indistinguishable between 'all curation strategies")
+        print("      work equally' and 'the fine-tuning did nothing'.")
+
     print(f"\n  Raw per-question results: {out_dir}")
 
 
@@ -222,6 +262,13 @@ def main():
     )
     ap.add_argument("--arms", nargs="+", default=["qubo", "greedy", "random"],
                     help="Arm names (default: qubo greedy random)")
+    ap.add_argument("--base-arm", default="base",
+                    help="Label for the untuned control arm (default: base). "
+                         "Evaluated with no adapter; pass --no-base to omit it.")
+    ap.add_argument("--no-base", action="store_true",
+                    help="Skip the untuned base-model control. Not recommended: without "
+                         "it, arms tying is indistinguishable between 'all curation "
+                         "strategies work' and 'the fine-tuning did nothing'.")
     ap.add_argument("--adapter-root", default="checkpoints",
                     help="Adapters are <root>/curate-<arm>/final_adapter (default: checkpoints)")
     ap.add_argument("--adapter-pattern", default="curate-{arm}/final_adapter",
@@ -248,20 +295,27 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # The control arm is listed first so it anchors the table it appears in.
+    all_arms = ([] if args.no_base else [args.base_arm]) + list(args.arms)
+
     if not args.skip_eval:
         if args.n < 300:
             print(f"[warn] --n {args.n} is below the ~300 needed to resolve the "
                   f"differences this experiment is testing for.")
+        # Check every adapter up front: a missing one 40 minutes into the run
+        # wastes the arms already evaluated.
         for arm in args.arms:
             adapter = Path(args.adapter_root) / args.adapter_pattern.format(arm=arm)
             if not adapter.exists():
                 sys.exit(f"[ERROR] Adapter not found for arm '{arm}': {adapter}")
-        for arm in args.arms:
-            adapter = Path(args.adapter_root) / args.adapter_pattern.format(arm=arm)
+        for arm in all_arms:
+            adapter = (None if arm == args.base_arm and not args.no_base
+                       else Path(args.adapter_root) / args.adapter_pattern.format(arm=arm))
             run_arm(arm, adapter, out_dir, args.benchmark, args.n,
                     args.seed, args.device, args.eval_arg)
 
-    report(out_dir, args.arms, args.benchmark, args.mode)
+    report(out_dir, all_arms, args.benchmark, args.mode,
+           base_arm=None if args.no_base else args.base_arm)
 
 
 if __name__ == "__main__":
