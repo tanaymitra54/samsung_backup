@@ -322,21 +322,44 @@ class BenchmarkRunner:
             answers.append(item["answer"])
         return questions, answers
 
-    def load_benchmark(self, name: str) -> tuple[list[str], list[str]]:
-        loaders = {
+    def _loader_registry(self) -> dict:
+        """Every benchmark this class can actually load.
+
+        Distinct from self.benchmarks, which is the config's DEFAULT SET to run.
+        Callers validating a user-supplied --benchmarks against the config list
+        reject benchmarks that are perfectly loadable but simply not in the
+        default set -- which silently made math 500, aime, gpqa diamond and
+        mmlu pro unreachable from the command line.
+        """
+        return {
             "gsm8k": self.load_gsm8k,
             "bbh": self.load_bbh,
             "strategyqa": self.load_strategyqa,
             "mmlu": self.load_mmlu,
             "arc_challenge": self.load_arc_challenge,
             "math 500": self.load_math_500,
+            # Underscore spelling is the documented one -- it needs no shell
+            # quoting, so a forgotten quote cannot silently split it into two
+            # benchmark names. The spaced form is accepted for consistency with
+            # the older names above.
+            "math500_holdout": self.load_math500_holdout,
             "math500 holdout": self.load_math500_holdout,
             "gpqa diamond": self.load_gpqa_diamond,
             "aime": self.load_aime,
             "mmlu pro": self.load_mmlu_pro,
         }
+
+    @property
+    def available_benchmarks(self) -> list[str]:
+        """Names accepted by load_benchmark(). Validate user input against this."""
+        return sorted(self._loader_registry())
+
+    def load_benchmark(self, name: str) -> tuple[list[str], list[str]]:
+        loaders = self._loader_registry()
         if name not in loaders:
-            raise ValueError(f"Unknown benchmark: {name}")
+            raise ValueError(
+                f"Unknown benchmark: {name!r}. Available: {sorted(loaders)}"
+            )
         return loaders[name]()
 
     def compute_accuracy(

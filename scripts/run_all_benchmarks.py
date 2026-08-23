@@ -164,6 +164,8 @@ TASK_TYPE = {
     "math 500": "math",
     # In-domain holdout for the SFT curation arms: MATH-500 minus the questions
     # whose chains became training data. See BenchmarkRunner.load_math500_holdout.
+    # Both spellings are registered as loaders; keep both typed here.
+    "math500_holdout": "math",
     "math500 holdout": "math",
     "gpqa diamond": "commonsense",
     "aime": "math",
@@ -1052,10 +1054,15 @@ def main():
         runner.full_eval = True
 
     benchmark_list = args.benchmarks if args.benchmarks else runner.benchmarks
-    unknown = [b for b in benchmark_list if b not in runner.benchmarks]
+    # Validate against what BenchmarkRunner can LOAD, not against the config's
+    # default run-set -- the latter rejected implemented benchmarks (math 500,
+    # aime, gpqa diamond, mmlu pro, math500 holdout) purely for not being listed
+    # as defaults.
+    unknown = [b for b in benchmark_list if b not in runner.available_benchmarks]
     if unknown:
         raise ValueError(
-            f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}"
+            f"Unknown benchmark(s): {unknown}. "
+            f"Available: {runner.available_benchmarks}"
         )
 
     use_batch = (
