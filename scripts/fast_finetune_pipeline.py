@@ -122,6 +122,14 @@ def parse_args():
     parser.add_argument("--lora-alpha", type=int,   default=64,   help="LoRA alpha (default: 64, = 2x rank)")
     parser.add_argument("--run-name",   default=None,
                         help="Name for this run (default: qubo-sft-fast-<timestamp>)")
+    parser.add_argument("--gen-eval-n", type=int, default=0,
+                        help="Questions for the per-epoch generation accuracy probe "
+                             "(default: 0 = off). This is a TRAINING PROBE ONLY -- it is "
+                             "never used to pick which epoch to keep, because at the "
+                             "sizes that are cheap enough to run every epoch its "
+                             "confidence interval is far too wide to rank anything. "
+                             "Measure real accuracy with scripts/compare_curation_arms.py "
+                             "on a held-out set instead.")
     parser.add_argument("--4bit", dest="four_bit", action="store_true",
                         help="Force 4-bit QLoRA. By default quantisation is used only "
                              "when the GPU has under 24GB -- on an 80GB card a 3B model "
@@ -251,6 +259,7 @@ LORA_RANK   = {args.lora_rank}
 LORA_ALPHA  = {lora_alpha}
 RESUME      = {bool(args.resume_finetune)}
 FORCE_4BIT  = {bool(args.four_bit)}
+GEN_EVAL_N  = {int(getattr(args, "gen_eval_n", 0))}
 QUALITY_THRESHOLD = 0.70   # Only train on QUBO examples with high correctness score
 
 with open(CONFIG_PATH) as f:
@@ -331,11 +340,16 @@ if not train_texts:
 train_ds = Dataset.from_dict({{"text": train_texts}})
 val_ds   = Dataset.from_dict({{"text": val_texts}}) if val_texts else None
 
-# Keep original raw validation data for accuracy evaluation
+# Optional per-epoch generation probe. Off by default: a probe small enough to
+# run every epoch has a confidence interval tens of points wide, so it cannot
+# rank two training runs against each other -- and it used to also SELECT which
+# epoch got saved (load_best_model_at_end below), which handed each arm of a
+# comparison its own independent upward nudge from noise. Real accuracy is
+# measured once, on a held-out set, by scripts/compare_curation_arms.py.
 val_raw_gsm8k = [r for r in val_raw if r.get("metadata", {{}}).get("source") == "gsm8k"]
 if not val_raw_gsm8k:
     val_raw_gsm8k = val_raw # Fallback if no gsm8k specifically
-val_raw_eval = val_raw_gsm8k[:40] # max 40 for speed
+val_raw_eval = val_raw_gsm8k[:GEN_EVAL_N] if GEN_EVAL_N > 0 else []
 
 # ── Step 3: Load model ────────────────────────────────────────────────
 # Auto-picks whichever visible GPU currently has the most free VRAM instead
@@ -470,9 +484,13 @@ _cfg = {{
     "logging_steps": 10,
     "save_strategy": "epoch",
     _eval_kw: "epoch",
-    "load_best_model_at_end": True,
-    "metric_for_best_model": "eval_gsm8k_accuracy",
-    "greater_is_better": True,
+    # No load_best_model_at_end: every arm keeps its FINAL epoch, so the arms
+    # differ only in their training data and not in which checkpoint luck
+    # happened to favour. Selecting on eval_gsm8k_accuracy over a few dozen
+    # questions is selecting on noise, and it biases each arm upward by a
+    # different random amount -- which is exactly what makes a multi-arm
+    # comparison unfalsifiable. eval_loss is still logged per epoch for the
+    # loss curve; it just does not decide anything.
     "remove_unused_columns": False,
     "report_to": "none",
     "run_name": RUN_NAME,
@@ -507,6 +525,19 @@ if "peft_config" in _sft_sig and peft_cfg is not None:
 
 # Subclass SFTTrainer to compute custom accuracy metric
 import re
+from math import sqrt
+
+def _wilson95(k, n, z=1.96):
+    """Wilson score interval -- behaves sanely at small n and near 0/1,
+    where the normal approximation runs off the end of [0, 1]."""
+    if n == 0:
+        return 0.0, 0.0
+    p = k / n
+    d = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / d
+    half = z * sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return max(0.0, centre - half), min(1.0, centre + half)
+
 class CustomAccTrainer(SFTTrainer):
     def __init__(self, *args, val_raw_data=None, tokenizer=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -557,7 +588,13 @@ class CustomAccTrainer(SFTTrainer):
         acc = correct / total if total > 0 else 0.0
         metrics[f"{{metric_key_prefix}}_gsm8k_accuracy"] = acc
         self.epoch_accuracies.append(acc)
-        print(f"[Eval] Epoch GSM8K Accuracy: {{acc:.2%}} ({{correct}}/{{total}})\\n")
+        # Print the interval, not just the point estimate -- at these sample
+        # sizes the interval is wide enough that two arms differing by several
+        # points are indistinguishable, and showing only "35%" invites reading
+        # a coin flip as a finding.
+        lo, hi = _wilson95(correct, total)
+        print(f"[Eval] Epoch GSM8K probe: {{acc:.1%}} ({{correct}}/{{total}})  "
+              f"95% CI [{{lo:.1%}}, {{hi:.1%}}]  -- probe only, does not select the checkpoint\\n")
         return metrics
 
 print(f"[SFT] Training {{len(train_texts)}} examples for {{EPOCHS}} epoch(s) | rank={{LORA_RANK}} alpha={{LORA_ALPHA}} lr={{LR}} ...")
@@ -589,13 +626,20 @@ if RESUME:
 
 trainer.train(resume_from_checkpoint=_resume_ckpt)
 
-# Check trending upward
+# A one-epoch uptick in the probe is almost never signal -- with a few dozen
+# questions a single question moves the number by several points -- so this
+# only speaks up when the last epoch clears the previous epoch's upper
+# confidence bound, i.e. when the rise is larger than the probe's own noise.
 accs = trainer.epoch_accuracies
-if len(accs) >= 2 and accs[-1] > accs[-2]:
-    print("\\n" + "!" * 60)
-    print("⚠️  TRENDING UPWARD: Accuracy improved on the last epoch.")
-    print("⚠️  You might want to train for more epochs.")
-    print("!" * 60 + "\\n")
+if len(accs) >= 2 and val_raw_eval:
+    _n = len(val_raw_eval)
+    _prev_hi = _wilson95(round(accs[-2] * _n), _n)[1]
+    if accs[-1] > _prev_hi:
+        print("\\n" + "!" * 60)
+        print(f"⚠️  Probe rose from {{accs[-2]:.1%}} to {{accs[-1]:.1%}} on the last epoch,")
+        print(f"⚠️  clearing the previous epoch's 95% upper bound ({{_prev_hi:.1%}}).")
+        print("⚠️  Consider more epochs -- then confirm on the held-out set.")
+        print("!" * 60 + "\\n")
 
 trainer.save_model(ADAPTER_OUT)
 tokenizer.save_pretrained(ADAPTER_OUT)
