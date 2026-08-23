@@ -175,6 +175,96 @@ class BenchmarkRunner:
         answers = [str(item["answer"]).strip() for item in dataset]
         return questions, answers
 
+    # Answers that survive this are plain numbers, matching the filter
+    # build_chain_cache.py applied when the training pool was built -- so the
+    # holdout is graded the same way the training questions were.
+    _MATH_NUMERIC = re.compile(r"^-?\d+(?:\.\d+)?$")
+
+    @staticmethod
+    def _clean_math_answer(ans: str) -> str:
+        """Strip LaTeX wrappers that hide an otherwise plain number.
+        Kept byte-identical to build_chain_cache._clean so the two agree on
+        which questions are numeric."""
+        s = str(ans).strip()
+        s = re.sub(r"^\\boxed\{(.*)\}$", r"\1", s)
+        s = s.replace("\\!", "").replace("\\,", "").replace("$", "").replace(",", "")
+        s = s.replace("\\%", "").replace("%", "")
+        return s.strip()
+
+    def load_math500_holdout(self) -> tuple[list[str], list[str]]:
+        """MATH-500 questions that are NOT in the cached training-chain pool.
+
+        WHY THIS EXISTS
+        ---------------
+        The SFT curation arms are trained on chains for the first 300
+        numeric-answer questions of MATH-500. load_math_500() returns the first
+        `subset_size` questions in raw order, so evaluating "math 500" at any
+        normal subset size scores the model on the very questions its training
+        chains were derived from. Every arm would look strong and the
+        comparison would be meaningless.
+
+        This loader takes the complement instead: MATH-500 minus every question
+        text present in the chain cache. Disjointness is established by exact
+        question-string match against the same file that produced the training
+        data, so it cannot drift out of sync with what was actually trained on.
+
+        Raises rather than silently falling back if the cache is missing -- a
+        quiet fallback here produces contaminated numbers that look fine.
+        """
+        cache_path = Path(
+            self.config.get("evaluation", {}).get(
+                "math500_chain_cache", "results/cached_chains_math500_300q.json"
+            )
+        )
+        if not cache_path.exists():
+            raise FileNotFoundError(
+                f"math500 holdout needs the training-chain cache to exclude, but "
+                f"{cache_path} does not exist. Without it the holdout cannot be "
+                f"proven disjoint from training, and a contaminated eval is worse "
+                f"than none. Set evaluation.math500_chain_cache in the config if "
+                f"the pool lives elsewhere."
+            )
+        with open(cache_path, encoding="utf-8") as f:
+            trained_on = {q.strip() for q in json.load(f).get("questions", [])}
+        if not trained_on:
+            raise ValueError(f"{cache_path} contains no 'questions' to exclude.")
+
+        dataset = load_dataset("HuggingFaceH4/MATH-500", split="test")
+        questions, answers, seen, non_numeric = [], [], 0, 0
+        for item in dataset:
+            problem = item["problem"]
+            if problem.strip() in trained_on:
+                seen += 1
+                continue
+            raw = self._clean_math_answer(item.get("answer", ""))
+            if not self._MATH_NUMERIC.fullmatch(raw):
+                non_numeric += 1
+                continue
+            questions.append(problem)
+            answers.append(raw)
+
+        print(
+            f"[math500 holdout] {len(dataset)} total - {seen} trained-on "
+            f"- {non_numeric} non-numeric = {len(questions)} available"
+        )
+        if seen == 0:
+            raise ValueError(
+                f"No MATH-500 question matched the chain cache at {cache_path}. "
+                f"The cache is probably for a different dataset, so nothing was "
+                f"actually excluded and this eval would be contaminated."
+            )
+        if not self.full_eval:
+            questions = questions[: self.subset_size]
+            answers = answers[: self.subset_size]
+        if len(questions) < 100:
+            print(
+                f"[math500 holdout] WARNING: only {len(questions)} questions. "
+                f"At this size the eval resolves differences of roughly "
+                f"{(2.8 * (2 * 0.3 * 0.7) ** 0.5 / max(len(questions), 1) ** 0.5):.0%} "
+                f"or larger -- treat a null result as 'could not resolve'."
+            )
+        return questions, answers
+
     def load_gpqa_diamond(self) -> tuple[list[str], list[str]]:
         dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
         if not self.full_eval:
@@ -240,6 +330,7 @@ class BenchmarkRunner:
             "mmlu": self.load_mmlu,
             "arc_challenge": self.load_arc_challenge,
             "math 500": self.load_math_500,
+            "math500 holdout": self.load_math500_holdout,
             "gpqa diamond": self.load_gpqa_diamond,
             "aime": self.load_aime,
             "mmlu pro": self.load_mmlu_pro,

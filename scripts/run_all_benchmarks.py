@@ -162,6 +162,9 @@ TASK_TYPE = {
     "mmlu": "commonsense",
     "arc_challenge": "commonsense",
     "math 500": "math",
+    # In-domain holdout for the SFT curation arms: MATH-500 minus the questions
+    # whose chains became training data. See BenchmarkRunner.load_math500_holdout.
+    "math500 holdout": "math",
     "gpqa diamond": "commonsense",
     "aime": "math",
     "mmlu pro": "commonsense",
