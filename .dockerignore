@@ -1,0 +1,13 @@
+.git/
+.gitignore
+.gitattributes
+*.md
+cache/
+checkpoints/
+training_data/
+outputs/
+__pycache__/
+*.pyc
+.venv/
+*.key
+*.pdf

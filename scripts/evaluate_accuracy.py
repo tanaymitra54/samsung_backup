@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline.sampling import DiverseSampler
 from pipeline.verifier import ReasonVerifier
 from pipeline.qubo_builder import QUBOBuilder
-from pipeline.solver import SimulatedAnnealingSolver
+from pipeline.solver import make_solver
 from pipeline.inference import InferencePipeline
 
 
@@ -69,7 +69,7 @@ def main():
     sampler = DiverseSampler()
     verifier = ReasonVerifier()
     qubo_builder = QUBOBuilder()
-    solver = SimulatedAnnealingSolver()
+    solver = make_solver()
     inference = InferencePipeline()
 
     correct = 0

@@ -6,8 +6,14 @@
 # and evaluation parameters used across sampling, inference, fine-tuning, and benchmarking.
 # ==============================================================================
 
+hardware:
+    num_gpus: 2
+    gpu: "NVIDIA H100 80GB"
+    cuda: "12.2"
+
 model:
-    name: "meta-llama/Llama-3.2-3B-Instruct"
+    name: "Qwen/Qwen2.5-3B-Instruct"
+    lora_adapter: ""
     cache_dir: "./cache/models"
     candidates:
         - "Qwen/Qwen3.5-4B"
@@ -24,7 +30,8 @@ model:
         gpu_memory_utilization: 0.9
 
 pipeline:
-    num_answers: 3        # 4 perturbations × 3 = 12 chains total, enough for QUBO
+    initial_prompt: "Let's solve this step by step."
+    num_answers: 4        # 4 perturbations × 4 = 16 chains total
     num_reasons: 4
     subset_size: 6
     max_new_tokens: 512   # keep for final answer generation

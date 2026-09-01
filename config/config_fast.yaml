@@ -1,3 +1,8 @@
+hardware:
+    num_gpus: 2
+    gpu: "NVIDIA H100 80GB"
+    cuda: "12.2"
+
 # ==============================================================================
 # FILE: config/config_fast.yaml
 # ROLE: Fast Execution & Rapid Evaluation Configuration File

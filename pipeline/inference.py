@@ -82,7 +82,7 @@ from pipeline.device_utils import candidate_cuda_devices, resolve_device
 
 
 class InferencePipeline:
-    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, use_vllm: bool | None = None, adapter_path: str | None = None):
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, use_vllm: bool | None = None, adapter_path: str | None = None, lora_adapter: str | None = None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
@@ -100,7 +100,12 @@ class InferencePipeline:
         self.use_vllm = model_cfg.get("use_vllm", False) if use_vllm is None else use_vllm
 
         # Resolve adapter path: explicit arg takes precedence, then env var
-        resolved_adapter = adapter_path or os.environ.get("QUBO_ADAPTER_PATH")
+        resolved_adapter = (
+            adapter_path
+            or lora_adapter
+            or model_cfg.get("lora_adapter")
+            or os.environ.get("QUBO_ADAPTER_PATH")
+        )
 
         if self.use_vllm:
             self.model = None

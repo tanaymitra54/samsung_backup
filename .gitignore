@@ -9,3 +9,4 @@ build/
 NOTES/ssh_keys.txt
 
 .venv/
+training_data/

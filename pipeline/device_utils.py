@@ -7,7 +7,19 @@ to automatically fall back to `cuda:0` when an requested GPU index exceeds avail
 ==============================================================================
 """
 
+import os
+
 import torch
+
+
+def apply_lora_adapter(model, adapter_path: str | None):
+    if not adapter_path:
+        return model
+    if not os.path.isdir(adapter_path):
+        return model
+    from peft import PeftModel
+
+    return PeftModel.from_pretrained(model, adapter_path)
 
 
 def resolve_device(preferred: str | None = None) -> torch.device:
@@ -30,6 +42,14 @@ def hf_device_map_value(device: torch.device):
     if device.type != "cuda":
         return None
     return device.index or 0
+
+
+def single_gpu_device_map(device: torch.device) -> dict | None:
+    """Pin a HF model to one GPU instead of device_map='auto'."""
+    idx = hf_device_map_value(device)
+    if idx is None:
+        return None
+    return {"": idx}
 
 
 def candidate_cuda_devices(preferred: str | None = None) -> list[torch.device]:

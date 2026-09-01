@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PRISM Pipeline — Approach Summary</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --fg: #f2f2f2;
+    --muted: #a8a8a8;
+    --line: #2a2a2a;
+    --accent: #e8e8e8;
+    --box: #141414;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #111;
+    color: var(--fg);
+    font-family: "SF Mono", "Menlo", "Consolas", ui-monospace, monospace;
+    line-height: 1.45;
+  }
+  .page {
+    width: 1100px;
+    margin: 28px auto;
+    background: var(--bg);
+    border: 1px solid #222;
+    padding: 36px 42px 40px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 0 0 6px;
+    letter-spacing: 0.02em;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 28px;
+  }
+  h2 {
+    font-size: 15px;
+    margin: 26px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+    color: var(--accent);
+  }
+  h2 .tag {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 12px;
+  }
+  ul { margin: 8px 0 0 18px; padding: 0; }
+  li { margin: 4px 0; font-size: 13.5px; }
+  .kv { display: grid; grid-template-columns: 220px 1fr; gap: 4px 16px; font-size: 13.5px; }
+  .k { color: var(--muted); }
+  .v { color: var(--fg); }
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    font-size: 12.5px;
+  }
+  .chip {
+    background: var(--box);
+    border: 1px solid #333;
+    padding: 8px 12px;
+    border-radius: 4px;
+  }
+  .arrow { color: #666; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    margin-top: 10px;
+  }
+  th, td {
+    border: 1px solid #2c2c2c;
+    padding: 9px 10px;
+    text-align: left;
+  }
+  th { background: #151515; color: #ddd; font-weight: 600; }
+  td { background: #0d0d0d; }
+  tr.total td { background: #171717; font-weight: 600; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 12px; }
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .box {
+    background: var(--box);
+    border: 1px solid #2a2a2a;
+    padding: 16px 18px;
+    border-radius: 4px;
+  }
+  .box h3 { margin: 0 0 10px; font-size: 14px; }
+  .pipeline-v {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin: 18px 0;
+  }
+  .node {
+    width: 520px;
+    text-align: center;
+    background: #121212;
+    border: 1px solid #333;
+    padding: 14px 16px;
+    border-radius: 4px;
+    font-size: 13.5px;
+  }
+  .node small { display: block; color: var(--muted); margin-top: 4px; font-size: 12px; }
+  .v-arrow { color: #666; font-size: 18px; }
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    width: 100%;
+    margin-top: 6px;
+  }
+  .stage {
+    border: 1px dashed #3a3a3a;
+    padding: 14px;
+    border-radius: 4px;
+    background: #101010;
+  }
+  .stage h4 { margin: 0 0 8px; font-size: 13px; }
+  .stage p, .stage li { font-size: 12.5px; }
+  .footer-flow {
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    font-size: 12.5px;
+    color: #ccc;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- ===================== PAGE 1: FULL DETAILS ===================== -->
+<section class="page">
+  <h1>PRISM Pipeline — Full Approach Summary</h1>
+  <div class="subtitle">Quantum-inspired QUBO reasoning at inference + QLoRA SFT (our pipeline, not QUBO-for-dataset-curation)</div>
+
+  <h2>1. Inference Pipeline <span class="tag">(core approach — QUBO used at inference time)</span></h2>
+  <ul>
+    <li><b>Base model (training plan):</b> Qwen/Qwen2.5-1.5B-Instruct → after SFT: checkpoints/prism-sft-v1/merged_model</li>
+    <li><b>Eval / fast configs also used:</b> Qwen2.5-3B-Instruct, Llama-3.2-3B-Instruct (benchmark runs)</li>
+    <li><b>Candidate generation:</b> 4 prompt perturbations × 4 samples = <b>16 reasoning chains / question</b></li>
+    <li><b>Temperature range:</b> [0.3, 0.9] · <b>top_p:</b> 0.95 · <b>max_new_tokens:</b> 256</li>
+    <li><b>Verifier:</b> Math = gold_match×0.6 + arithmetic_consistency×0.4 · Commonsense = NLI entailment (deberta-v3-base)</li>
+    <li><b>QUBO selection (Simulated Annealing):</b> embed (MiniLM) → KMeans cluster (≤50) → ≤200 vars</li>
+  </ul>
+  <div class="kv" style="margin-top:12px">
+    <div class="k">Q diagonal</div><div class="v">−correctness_score + diversity_bonus (0.5)</div>
+    <div class="k">Q off-diagonal</div><div class="v">cosine_similarity × penalty_weight (2.0)</div>
+    <div class="k">SA schedule</div><div class="v">T₀=100 → T_f=0.01 · cooling=0.99 · iterations=500 · reads=2</div>
+    <div class="k">GPU SA</div><div class="v">1024 parallel reads · parallel tempering ON · counterdiabatic OFF · HUBO OFF</div>
+    <div class="k">Final step</div><div class="v">Selected reasons re-ranked vs question · composed into final LLM answer</div>
+  </div>
+
+  <h2>2. SFT Dataset Generation <span class="tag">(OpenMathInstruct stratified — not QUBO-curated chains)</span></h2>
+  <ul>
+    <li><b>Primary source:</b> nvidia/OpenMathInstruct-2 (~600K) → stratified downsample → <b>~20,000</b> examples</li>
+    <li><b>High-signal add-on:</b> 54 correct CoT traces from our benchmark CSVs (outputs/)</li>
+    <li><b>Total target:</b> ~20,054 · format: Qwen chat template · path: training_data/combined_dataset/</li>
+    <li><b>Why this design:</b> Improve base reasoning quality so PRISM sampler produces better candidates for QUBO</li>
+  </ul>
+
+  <h2>3. QLoRA SFT Fine-Tuning</h2>
+  <div class="kv">
+    <div class="k">Base model</div><div class="v">Qwen/Qwen2.5-1.5B-Instruct</div>
+    <div class="k">Run / output</div><div class="v">checkpoints/prism-sft-v1 (adapter + merged_model)</div>
+    <div class="k">Epochs</div><div class="v">3</div>
+    <div class="k">Batch / GPU</div><div class="v">8 · grad_accum=4 · effective ≈ 32 (× #GPUs)</div>
+    <div class="k">Learning rate</div><div class="v">2e-5 · warmup=100 · cosine schedule · adamw_8bit</div>
+    <div class="k">LoRA</div><div class="v">r=16 · α=32 · dropout=0.05 · targets: q/k/v/o_proj</div>
+    <div class="k">Precision</div><div class="v">BF16 (if supported) / FP16 + 4-bit NF4 QLoRA</div>
+    <div class="k">Max seq length</div><div class="v">2048</div>
+    <div class="k">Hardware</div><div class="v">2× NVIDIA H100 80GB · CUDA 12.2</div>
+    <div class="k">Iterative rounds (planned)</div><div class="v">3 (config training.iterative_rounds)</div>
+  </div>
+  <p class="note">Note: local repo has no trainer_state / W&amp;B loss dump. Loss curves live on training host if logged with --wandb.</p>
+
+  <h2>4. Preference Pair Generation &amp; DPO <span class="tag">(optional stage 2)</span></h2>
+  <ul>
+    <li><b>Chosen:</b> correct CoT traces (correct_cot=1)</li>
+    <li><b>Rejected:</b> incorrect CoT traces for same question</li>
+    <li><b>Available now from outputs/:</b> 54 positive · 109 negative · <b>13 preference pairs</b> (same-question overlap)</li>
+    <li><b>DPO defaults:</b> β=0.1 · LR=1e-6 · epochs=2 · batch=4 · grad_accum=2 · LoRA r=16 α=32 · BF16/FP16 + 4-bit NF4</li>
+    <div class="note" style="margin-left:-18px">Scale-up path: collect more pos/neg pairs from full benchmark runs, or mine QUBO-selected vs low-score rejected chains.</div>
+  </ul>
+
+  <div class="footer-flow">
+    <b>End-to-end:</b>
+    OpenMathInstruct-2 (600K) → Stratified 20K + 54 eval traces → QLoRA SFT →
+    Inference: 16 chains → Verifier → QUBO SA → Final answer → (optional) DPO
+  </div>
+</section>
+
+<!-- ===================== PAGE 2: FLOWCHART ===================== -->
+<section class="page">
+  <h1>PRISM Pipeline Overview</h1>
+  <div class="subtitle">Two-stage view matching friend’s share format — our actual stages</div>
+
+  <div class="pipeline-v">
+    <div class="node">
+      <b>Raw Sources</b>
+      <small>nvidia/OpenMathInstruct-2 + benchmark CSVs (GSM8K / MMLU / BBH / ARC / StrategyQA…)</small>
+    </div>
+    <div class="v-arrow">↓</div>
+    <div class="node">
+      <b>Stratified Sampling → ~20K SFT examples</b>
+      <small>7 reasoning strata + ~54 high-signal correct CoT traces</small>
+    </div>
+    <div class="v-arrow">↓</div>
+    <div class="node">
+      <b>QLoRA SFT (3 epochs)</b>
+      <small>Qwen2.5-1.5B-Instruct · r=16 α=32 · LR 2e-5 · 4-bit NF4 · prism-sft-v1</small>
+    </div>
+    <div class="v-arrow">↓</div>
+    <div class="node">
+      <b>Inference-time QUBO Reasoning (PRISM)</b>
+      <small>16 candidates → verifier scores → QUBO SA (penalty=2.0, diversity=0.5) → composed answer</small>
+    </div>
+  </div>
+
+  <div class="split">
+    <div class="stage">
+      <h4>Stage 1 — Supervised Fine-Tuning</h4>
+      <p><b>Dataset:</b> ~20,054 examples<br/>OpenMathInstruct stratified + eval traces</p>
+      <p><b>Method:</b> 3-epoch QLoRA SFT</p>
+      <p><b>Artifact:</b> prism-sft-v1 / merged_model</p>
+    </div>
+    <div class="stage">
+      <h4>Stage 2 — DPO Alignment (optional)</h4>
+      <p><b>Pairs:</b> Chosen vs Rejected CoT<br/>(currently 13 same-question pairs mined)</p>
+      <p><b>Method:</b> DPO · β=0.1 · LR=1e-6 · 2 epochs</p>
+      <p><b>Artifact:</b> checkpoints/prism-dpo</p>
+    </div>
+  </div>
+
+  <div class="footer-flow">
+    600K OpenMath → Stratified 20K → QLoRA SFT → 16 Chains/Q → Verifier → QUBO SA → Answer → DPO (opt.)
+  </div>
+</section>
+
+<!-- ===================== PAGE 3: DATASET TABLE ===================== -->
+<section class="page">
+  <h1>A. Dataset Yield &amp; Stratified Sampling Statistics</h1>
+  <div class="subtitle">SFT data construction for PRISM (OpenMathInstruct-2 + own eval traces)</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Stratum / Source</th>
+        <th>Domain</th>
+        <th>Target / Raw</th>
+        <th>Selected</th>
+        <th>Benchmark Target</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Arithmetic</td>
+        <td>Math word problems</td>
+        <td>2,000</td>
+        <td>2,000</td>
+        <td>GSM8K</td>
+        <td>OpenMathInstruct-2</td>
+      </tr>
+      <tr>
+        <td>Algebra / Calculus</td>
+        <td>Equations &amp; analysis</td>
+        <td>2,000</td>
+        <td>2,000</td>
+        <td>MMLU math</td>
+        <td>OpenMathInstruct-2</td>
+      </tr>
+      <tr>
+        <td>Geometry / Trig</td>
+        <td>Spatial / trig</td>
+        <td>2,000</td>
+        <td>2,000</td>
+        <td>MMLU math</td>
+        <td>OpenMathInstruct-2</td>
+      </tr>
+      <tr>
+        <td>Probability / Stats</td>
+        <td>Uncertainty reasoning</td>
+        <td>2,000</td>
+        <td>2,000</td>
+        <td>MMLU + BBH</td>
+        <td>OpenMathInstruct-2</td>
+      </tr>
+      <tr>
+        <td>Logical reasoning</td>
+        <td>Boolean / deduce</td>
+        <td>2,000</td>
+        <td>2,000</td>
+        <td>BBH</td>
+        <td>OpenMathInstruct-2</td>
+      </tr>
+      <tr>
+        <td>Science</td>
+        <td>Physics / chem</td>
+        <td>300</td>
+        <td>300</td>
+        <td>MMLU science</td>
+        <td>Capped (rare in source)</td>
+      </tr>
+      <tr>
+        <td>Code / Algorithms</td>
+        <td>Procedural reasoning</td>
+        <td>2,000</td>
+        <td>2,000</td>
+        <td>General</td>
+        <td>OpenMathInstruct-2</td>
+      </tr>
+      <tr>
+        <td>General (fallback)</td>
+        <td>Diversity top-up</td>
+        <td>~5,646</td>
+        <td>~5,646</td>
+        <td>—</td>
+        <td>Fill to 20K total</td>
+      </tr>
+      <tr>
+        <td>PRISM eval traces</td>
+        <td>Own correct CoT</td>
+        <td>54</td>
+        <td>54</td>
+        <td>GSM8K/MMLU/BBH…</td>
+        <td>From outputs/*.csv</td>
+      </tr>
+      <tr class="total">
+        <td>TOTAL</td>
+        <td>Mixed reasoning set</td>
+        <td>~20,054</td>
+        <td>~20,054</td>
+        <td>—</td>
+        <td>No OpenOrca; math-aligned</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <ul style="margin-top:18px">
+    <li><b>Train artifact:</b> training_data/combined_dataset/ (HF Dataset) + training_data/training_data.json</li>
+    <li><b>Sampling method:</b> keyword stratified classification + early-stop streaming (seed=42)</li>
+    <li><b>QUBO role:</b> NOT used to curate this SFT set — QUBO selects reasons at <i>inference</i></li>
+  </ul>
+
+  <h2>B. Representative Benchmark Snapshot <span class="tag">(from outputs/llama_tests)</span></h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Benchmark</th>
+        <th>Samples</th>
+        <th>Greedy</th>
+        <th>CoT</th>
+        <th>QUBO</th>
+        <th>Δ vs Greedy</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>GSM8K</td>
+        <td>30</td>
+        <td>16.67%</td>
+        <td>53.33%</td>
+        <td>70.00%</td>
+        <td>+53.33%</td>
+      </tr>
+      <tr>
+        <td>MMLU</td>
+        <td>30</td>
+        <td>16.67%</td>
+        <td>20.00%</td>
+        <td>36.67%</td>
+        <td>+20.00%</td>
+      </tr>
+      <tr>
+        <td>BBH</td>
+        <td>27</td>
+        <td>14.81%</td>
+        <td>55.56%</td>
+        <td>51.85%</td>
+        <td>+37.04%</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">These are subset evals (not full-dataset). QUBO = full PRISM pipeline accuracy.</p>
+</section>
+
+</body>
+</html>

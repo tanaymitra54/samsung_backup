@@ -140,7 +140,7 @@ class QUBOBuilder:
     to find the optimal binary selection vector x.
     """
 
-    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None):
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, shared_embedder=None):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
@@ -188,12 +188,15 @@ class QUBOBuilder:
         preferred_device = device or self.config.get("evaluation", {}).get("device")
         embedder_device = qubo_cfg.get("embedder_device") or str(resolve_device(preferred_device))
 
-        # SentenceTransformer: converts reason text to dense semantic vectors.
-        # "all-MiniLM-L6-v2" is a 22M-parameter model that produces 384-dim
-        # embeddings. It is fast and accurate enough for semantic similarity
-        # estimation at our scale. The cosine similarity between two embeddings
-        # is our proxy for semantic redundancy between two reasons.
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
+        if shared_embedder is not None:
+            self.embedder = shared_embedder
+        else:
+            # SentenceTransformer: converts reason text to dense semantic vectors.
+            # "all-MiniLM-L6-v2" is a 22M-parameter model that produces 384-dim
+            # embeddings. It is fast and accurate enough for semantic similarity
+            # estimation at our scale. The cosine similarity between two embeddings
+            # is our proxy for semantic redundancy between two reasons.
+            self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
 
     # =========================================================================
     # ─── EMBEDDING & CLUSTERING ───────────────────────────────────────────────

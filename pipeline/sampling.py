@@ -327,8 +327,11 @@ class DiverseSampler:
         all_samples = []
         perturbations = self.perturb_prompt(question, task_type=task_type)
 
-        for prompt_temp in perturbations:
-            for _ in range(self.num_answers):
+        total = len(perturbations) * self.num_answers
+        for pi, prompt_temp in enumerate(perturbations):
+            for ai in range(self.num_answers):
+                idx = pi * self.num_answers + ai
+                print(f"  sample {idx + 1}/{total}")
                 # Draw a fresh temperature for each sample.
                 # Different temperatures within the same perturbation produce
                 # different levels of linguistic creativity in the output.

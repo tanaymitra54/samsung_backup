@@ -15,7 +15,8 @@ from evaluation.answer_utils import (
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
-from pipeline.solver import SimulatedAnnealingSolver
+from pipeline.orchestrator import run_one_query
+from pipeline.solver import make_solver
 from pipeline.verifier import ReasonVerifier
 
 
@@ -44,20 +45,14 @@ def run_qubo_pipeline(
     sampler: DiverseSampler,
     verifier: ReasonVerifier,
     qubo_builder: QUBOBuilder,
-    solver: SimulatedAnnealingSolver,
+    solver,
     inference: InferencePipeline,
     question: str,
 ) -> str:
-    samples = sampler.sample(question)
-    if not samples:
-        return ""
-    samples = verifier.score_batch(samples, task_type="math")
-    Q, qubo_var_indices = qubo_builder.build_qubo(samples)
-    state, _ = solver.solve(Q)
-    selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
-    if not selected_indices:
-        selected_indices = list(range(min(inference.subset_size, len(samples))))
-    return inference.run(question, selected_indices, samples)
+    result = run_one_query(
+        sampler, verifier, qubo_builder, solver, inference, question, task_type="math"
+    )
+    return result.get("answer", "")
 
 
 def compute_summary(rows):
@@ -120,7 +115,7 @@ def main():
     sampler = DiverseSampler()
     verifier = ReasonVerifier()
     qubo_builder = QUBOBuilder()
-    solver = SimulatedAnnealingSolver()
+    solver = make_solver()
     inference = InferencePipeline()
 
     rows = []

@@ -50,7 +50,8 @@ from pipeline.device_utils import resolve_device
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
-from pipeline.solver import SimulatedAnnealingSolver
+from pipeline.solver import make_solver
+from pipeline.orchestrator import run_one_query
 from pipeline.verifier import ReasonVerifier
 
 
@@ -230,22 +231,25 @@ def run_qubo_pipeline(
     sampler: DiverseSampler,
     verifier: ReasonVerifier,
     qubo_builder: QUBOBuilder,
-    solver: SimulatedAnnealingSolver,
+    solver,
     inference: InferencePipeline,
     question: str,
     task_type: str = "math",
     gold: str = "",
+    is_mcq: bool = False,
 ) -> str:
-    samples = sampler.sample(question)
-    if not samples:
-        return ""
-    samples = verifier.score_batch(samples, task_type=task_type, gold=gold)
-    Q, qubo_var_indices = qubo_builder.build_qubo(samples)
-    state, _ = solver.solve(Q)
-    selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
-    if not selected_indices:
-        selected_indices = list(range(min(inference.subset_size, len(samples))))
-    return inference.run(question, selected_indices, samples)
+    result = run_one_query(
+        sampler,
+        verifier,
+        qubo_builder,
+        solver,
+        inference,
+        question,
+        task_type=task_type,
+        gold=gold,
+        is_mcq=is_mcq,
+    )
+    return result.get("answer", "")
 
 
 def extract_answer(pred: str, benchmark: str) -> str:
@@ -380,7 +384,7 @@ def run_benchmark_on_gpu(
     )
     verifier = ReasonVerifier(config_path, device=runtime_device)
     qubo_builder = QUBOBuilder(config_path, device=runtime_device)
-    solver = SimulatedAnnealingSolver(config_path, device=runtime_device)
+    solver = make_solver(config_path, device=runtime_device)
 
     task_type = TASK_TYPE.get(benchmark_name, "math")
     questions, gold_answers = runner.load_benchmark(benchmark_name)
@@ -393,8 +397,8 @@ def run_benchmark_on_gpu(
     failed = 0
 
     if use_batch and batch_size > 1 and torch.cuda.is_available():
-        batch_greedy_fn = make_batch_greedy(inference)
-        batch_cot_fn = make_batch_cot(inference)
+        batch_greedy_fn = make_batch_greedy(inference, benchmark=benchmark_name)
+        batch_cot_fn = make_batch_cot(inference, benchmark=benchmark_name)
         for i in range(0, len(questions), batch_size):
             batch_q = questions[i : i + batch_size]
             batch_gold = gold_answers[i : i + batch_size]
@@ -469,9 +473,9 @@ def run_benchmark_on_gpu(
         for idx, (q, gold) in enumerate(zip(questions, gold_answers)):
             try:
                 t0 = time.time()
-                pred_greedy = baseline_greedy(inference, q)
+                pred_greedy = baseline_greedy(inference, q, benchmark=benchmark_name)
                 t1 = time.time()
-                pred_cot = baseline_cot(inference, q)
+                pred_cot = baseline_cot(inference, q, benchmark=benchmark_name)
                 t2 = time.time()
                 pred_qubo = run_qubo_pipeline(
                     sampler,
@@ -689,7 +693,7 @@ def main():
         qubo_builder = QUBOBuilder(device=runtime_device)
         print("[5/6] Loading solver...")
         sys.stdout.flush()
-        solver = SimulatedAnnealingSolver(device=runtime_device)
+        solver = make_solver(device=runtime_device)
         print("[6/6] Initialization complete!")
         print("")
 
