@@ -23,20 +23,13 @@ from typing import Optional
 import numpy as np
 import yaml
 
+from pipeline.answer_groups import keep_one_answer_group, pick_winning_group
 from pipeline.inference import InferencePipeline, compose_final_prompt
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
+from pipeline.selection import select_best_reasoning
 from pipeline.solver import make_solver
 from pipeline.verifier import ReasonVerifier
-
-
-def select_best_reasoning(
-    state: np.ndarray, qubo_var_indices: list[int], n_samples: int, subset_size: int
-) -> list[int]:
-    selected = [qubo_var_indices[i] for i in range(len(state)) if int(state[i]) == 1]
-    if not selected:
-        selected = list(range(min(subset_size, n_samples)))
-    return selected
 
 
 class PRISMPipeline:
@@ -92,6 +85,7 @@ class PRISMPipeline:
         gold: str = "",
         task_type: str = "math",
         is_mcq: bool = False,
+        score_with_gold: bool = False,
     ) -> dict:
         if self.sampler is None:
             self._load_components()
@@ -112,19 +106,29 @@ class PRISMPipeline:
                 "gold": gold,
             }
 
-        # 3. QUBO mapping + Quantum solver (verifier scores feed the Q diagonal)
+        # Eval must not score with gold. Training data gen can set score_with_gold.
         n = len(samples)
         print(f"  scoring {n} traces...")
-        samples = self.verifier.score_batch(samples, task_type=task_type, gold=gold or None)
+        samples = self.verifier.score_batch(
+            samples,
+            task_type=task_type,
+            gold=(gold or None) if score_with_gold else None,
+        )
         print("  building QUBO...")
-        Q, qubo_var_indices = self.qubo_builder.build_qubo(samples)
+        group_idx = pick_winning_group(samples)
+        group_samples = [samples[i] for i in group_idx]
+        Q, qubo_var_indices = self.qubo_builder.build_qubo(group_samples)
         print("  solving QUBO...")
-        state, energy = self.solver.solve(Q)
+        k = min(self.inference.subset_size, len(group_samples))
+        state, energy = self.solver.solve(Q, k=k)
         print(f"  QUBO solved (energy={energy:.4f})")
 
-        # 4. Select the best reasoning
-        selected_indices = select_best_reasoning(
-            state, qubo_var_indices, len(samples), self.inference.subset_size
+        scores = [s.get("correctness_score", 0.0) for s in group_samples]
+        local_selected = select_best_reasoning(
+            state, qubo_var_indices, len(group_samples), k, scores=scores
+        )
+        selected_indices = keep_one_answer_group(
+            samples, [group_idx[i] for i in local_selected if i < len(group_idx)]
         )
 
         # 5. generate final prompt
@@ -309,20 +313,34 @@ def run_one_query(
     gold: str = "",
     is_mcq: bool = False,
     initial_prompt: str | None = None,
+    score_with_gold: bool = False,
+    samples: list | None = None,
 ) -> dict:
-    samples = sampler.sample(question, task_type=task_type)
+    if samples is None:
+        samples = sampler.sample(question, task_type=task_type)
     if not samples:
         return {"answer": "", "selected_indices": [], "selected_traces": [], "paths": []}
     n = len(samples)
     print(f"  scoring {n} traces...")
-    samples = verifier.score_batch(samples, task_type=task_type, gold=gold or None)
+    samples = verifier.score_batch(
+        samples,
+        task_type=task_type,
+        gold=(gold or None) if score_with_gold else None,
+    )
     print("  building QUBO...")
-    Q, qubo_var_indices = qubo_builder.build_qubo(samples)
+    group_idx = pick_winning_group(samples)
+    group_samples = [samples[i] for i in group_idx]
+    Q, qubo_var_indices = qubo_builder.build_qubo(group_samples)
     print("  solving QUBO...")
-    state, energy = solver.solve(Q)
+    k = min(inference.subset_size, len(group_samples))
+    state, energy = solver.solve(Q, k=k)
     print(f"  QUBO solved (energy={energy:.4f})")
-    selected_indices = select_best_reasoning(
-        state, qubo_var_indices, len(samples), inference.subset_size
+    scores = [s.get("correctness_score", 0.0) for s in group_samples]
+    local_selected = select_best_reasoning(
+        state, qubo_var_indices, len(group_samples), k, scores=scores
+    )
+    selected_indices = keep_one_answer_group(
+        samples, [group_idx[i] for i in local_selected if i < len(group_idx)]
     )
     final_prompt, ordered_reasons = inference.prepare_final_prompt(
         question, selected_indices, samples, is_mcq=is_mcq

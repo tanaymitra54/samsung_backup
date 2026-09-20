@@ -126,7 +126,9 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 
+from pipeline.answer_groups import normalise_answer
 from pipeline.device_utils import resolve_device
+from pipeline.qubo_math import pairwise_penalty
 
 
 class QUBOBuilder:
@@ -175,12 +177,14 @@ class QUBOBuilder:
         self.hubo_enabled = qubo_cfg.get("hubo_enabled", False)
         self.hubo_triplet_penalty = qubo_cfg.get("hubo_triplet_penalty", 1.0)
 
-        # Fix #2 — Answer-aware off-diagonal weights
-        self.answer_sim_weight   = qubo_cfg.get("answer_sim_weight",   0.6)
-        self.answer_agree_weight = qubo_cfg.get("answer_agree_weight", 0.4)
+        # Agreement is evidence, not a penalty. Cosine applies only inside an
+        # answer group (duplicate rationales). See Debanjan review point 5.
+        self.answer_sim_weight = qubo_cfg.get("answer_sim_weight", 1.0)
+        self.answer_agree_weight = qubo_cfg.get("answer_agree_weight", 0.0)
 
-        # Fix #3 — Soft cardinality constraint coefficient (λ_c)
-        self.cardinality_penalty = qubo_cfg.get("cardinality_penalty", 0.1)
+        # Soft λ_c is unused when exact_k is on. Exact K is enforced in the solver.
+        self.exact_k = qubo_cfg.get("exact_k", True)
+        self.cardinality_penalty = qubo_cfg.get("cardinality_penalty", 0.0)
 
         # Fix #6 — Top-k representatives per cluster
         self.top_k_per_cluster = qubo_cfg.get("top_k_per_cluster", 2)
@@ -331,35 +335,34 @@ class QUBOBuilder:
             correctness = samples[idx].get("correctness_score", 0.5)
             Q[i][i] = -correctness + self.diversity_bonus
 
-        # OFF-DIAGONAL (Fix #2): Q[i][j] = (α·cosine + β·answer_agree) × penalty_weight
-        #
-        # Two chains that share the same extracted answer are logically redundant
-        # even if their textual embeddings appear diverse. The answer_agree term
-        # fires on logical redundancy that cosine similarity would miss.
-        # Empty-answer guard: two chains with empty answers are NOT treated as
-        # logically identical — we have no evidence of agreement in that case.
+        # OFF-DIAGONAL: duplicate-rationale penalty only when answers agree.
+        # Conflicting answers are not penalised here; the orchestrator keeps one
+        # answer group before / after the solve so the final prompt does not mix them.
         sim_matrix = cosine_similarity(selected_embeddings)
         answers = [
             samples[selected_indices[i]].get("answer", "") or ""
             for i in range(n)
         ]
 
-        def _normalise_ans(a: str) -> str:
-            return a.strip().lower()
-
         for i in range(n):
             for j in range(i + 1, n):
-                cos_sim = sim_matrix[i][j]
-                a_i = _normalise_ans(answers[i])
-                a_j = _normalise_ans(answers[j])
-                agree = 1.0 if (a_i and a_j and a_i == a_j) else 0.0
-                combined = self.answer_sim_weight * cos_sim + self.answer_agree_weight * agree
-                Q[i][j] = combined * self.penalty_weight
-                Q[j][i] = Q[i][j]   # symmetric
+                a_i = normalise_answer(answers[i])
+                a_j = normalise_answer(answers[j])
+                agree = bool(a_i and a_j and a_i == a_j)
+                pen = pairwise_penalty(
+                    cos=float(sim_matrix[i][j]) * self.answer_sim_weight,
+                    answers_agree=agree,
+                    penalty_weight=self.penalty_weight,
+                )
+                Q[i][j] = pen
+                Q[j][i] = pen
 
-        # ── Step 4: Soft cardinality constraint (Fix #3) ──────────────────
-        k_target = self.config["pipeline"]["subset_size"]
-        Q = self._apply_cardinality_constraint(Q, k=k_target, lambda_c=self.cardinality_penalty)
+        # Soft cardinality is a leftover. Exact K is enforced at solve time.
+        if not self.exact_k and self.cardinality_penalty:
+            k_target = self.config["pipeline"]["subset_size"]
+            Q = self._apply_cardinality_constraint(
+                Q, k=k_target, lambda_c=self.cardinality_penalty
+            )
 
         return Q, selected_indices
 

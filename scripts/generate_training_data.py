@@ -57,8 +57,11 @@ sys.path.insert(0, str(_REPO_ROOT))
 from pipeline.sampling import DiverseSampler
 from pipeline.verifier import ReasonVerifier
 from pipeline.qubo_builder import QUBOBuilder
-from pipeline.solver import SimulatedAnnealingSolver
+from pipeline.answer_groups import pick_winning_group
 from pipeline.device_utils import resolve_device
+from pipeline.preference_labels import chain_matches_gold
+from pipeline.selection import select_best_reasoning
+from pipeline.solver import SimulatedAnnealingSolver
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 DATASET_CONFIGS = {
@@ -73,7 +76,7 @@ DATASET_CONFIGS = {
     "mmlu": {
         "hf_path": "cais/mmlu",
         "hf_name": "all",
-        "split": "test",
+        "split": "validation",
         "n": 800,
         "task_type": "commonsense",
         "target_frac": 0.25,
@@ -331,7 +334,7 @@ def load_mmlu(n: int) -> list:
     """Load MMLU questions (MCQ format, same structure as ARC)."""
     from datasets import load_dataset
     try:
-        ds = load_dataset("cais/mmlu", "all", split="test", streaming=True)
+        ds = load_dataset("cais/mmlu", "all", split="validation", streaming=True)
         rows = []
         for row in ds:
             rows.append(row)
@@ -340,7 +343,7 @@ def load_mmlu(n: int) -> list:
     except Exception as e:
         print(f"[MMLU] Streaming failed ({e}), trying standard load...")
         try:
-            ds = load_dataset("cais/mmlu", "all", split="test")
+            ds = load_dataset("cais/mmlu", "all", split="validation")
             rows = list(ds)
         except Exception as e2:
             print(f"[MMLU] Standard load also failed ({e2}). Skipping MMLU.")
@@ -580,42 +583,44 @@ def run_qubo_pipeline(
     # 2. Score chains -- verifier computes correctness_score and consensus_score
     #    score_batch() already blends consensus in via (1-gamma)*base + gamma*consensus
     try:
-        chains = verifier.score_batch(chains, task_type=task_type, gold=gold, question=question)
+        # Train-split gold is used only after selection, as an independent check.
+        chains = verifier.score_batch(
+            chains, task_type=task_type, gold=None, question=question
+        )
     except Exception as e:
         stats["filtered"] = True
         stats["filter_reason"] = f"scoring_error: {e}"
         return [], stats
 
-    # 3. Build QUBO matrix
     try:
-        Q, selected_indices = qubo_builder.build_qubo(chains)
+        group_idx = pick_winning_group(chains)
+        group_chains = [chains[i] for i in group_idx]
+        Q, local_idx = qubo_builder.build_qubo(group_chains)
     except Exception as e:
         stats["filtered"] = True
         stats["filter_reason"] = f"qubo_error: {e}"
         return [], stats
 
-    if Q is None or len(selected_indices) == 0:
+    if Q is None or len(local_idx) == 0:
         stats["filtered"] = True
         stats["filter_reason"] = "empty_qubo"
         return [], stats
 
-    # 4. Solve QUBO with Simulated Annealing
     try:
-        state, _ = solver.solve(Q)
+        k = min(6, len(group_chains))
+        state, _ = solver.solve(Q, k=k)
     except Exception as e:
         stats["filtered"] = True
         stats["filter_reason"] = f"solver_error: {e}"
         return [], stats
 
-    # 5. Map active state bits to chain indices
-    active_local = [i for i, bit in enumerate(state) if bit == 1]
-    if not active_local:
-        stats["filtered"] = True
-        stats["filter_reason"] = "no_bits_active"
-        return [], stats
-
-    final_indices = [selected_indices[i] for i in active_local if i < len(selected_indices)]
-    selected_chains = [chains[idx] for idx in final_indices if idx < len(chains)]
+    scores = [c.get("correctness_score", 0.0) for c in group_chains]
+    local_selected = select_best_reasoning(
+        state, local_idx, len(group_chains), k, scores=scores
+    )
+    selected_chains = [
+        group_chains[i] for i in local_selected if i < len(group_chains)
+    ]
 
     if not selected_chains:
         stats["filtered"] = True
@@ -645,15 +650,11 @@ def run_qubo_pipeline(
     stats["greedy_would_have_failed"] = greedy_would_have_failed
     stats["full_chains_pool"] = chains
 
-    # 7b. Math tasks: top chain answer must match gold
-    if task_type == "math":
-        top_chain = selected_chains[0]
-        pred_num = _extract_last_number(top_chain.get("answer", "") or top_chain.get("reason", ""))
-        gold_num = _extract_last_number(gold)
-        if not _gold_match(pred_num, gold_num):
-            stats["filtered"] = True
-            stats["filter_reason"] = f"math_mismatch:pred={pred_num},gold={gold_num}"
-            return [], stats
+    # Independent gold check for every source that has a gold label.
+    if gold and not chain_matches_gold(selected_chains[0], gold, task_type):
+        stats["filtered"] = True
+        stats["filter_reason"] = f"gold_mismatch:pred={selected_chains[0].get('answer')},gold={gold}"
+        return [], stats
 
     return selected_chains, stats
 

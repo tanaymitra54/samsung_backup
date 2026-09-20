@@ -78,7 +78,20 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from pipeline.answer_groups import keep_one_answer_group
 from pipeline.device_utils import candidate_cuda_devices, resolve_device
+
+
+def compose_final_prompt(question: str, reasons: list[str], subset_size: int = 6) -> str:
+    k = min(subset_size, len(reasons))
+    prompt = "Here are some reasoning steps:\n"
+    for i, reason in enumerate(reasons[:k], 1):
+        prompt += f"{i}. {reason}\n"
+    prompt += (
+        "\nBased on these steps, answer the following question.\n"
+        f"Question: {question}\nAnswer:"
+    )
+    return prompt
 
 
 class InferencePipeline:
@@ -272,14 +285,25 @@ class InferencePipeline:
           QUBO solver's diversity guarantee means even a small subset covers
           different reasoning paths.
         """
-        K = min(self.subset_size, len(selected_reasons))
-        top_reasons = selected_reasons[:K]
+        return compose_final_prompt(question, selected_reasons, self.subset_size)
 
-        prompt = "Here are some reasoning steps:\n"
-        for i, reason in enumerate(top_reasons, 1):
-            prompt += f"{i}. {reason}\n"
-        prompt += f"\nBased on these steps, answer the following question.\nQuestion: {question}\nAnswer:"
-        return prompt
+    def prepare_final_prompt(
+        self,
+        question: str,
+        selected_indices: list[int],
+        samples: list[dict],
+        is_mcq: bool = False,
+    ) -> tuple[str, list[str]]:
+        selected_indices = keep_one_answer_group(samples, selected_indices)
+        selected_reasons = [
+            samples[i]["reason"] for i in selected_indices if i < len(samples)
+        ]
+        if selected_reasons:
+            ranked = self._rank_reasons_by_relevance(selected_reasons, question)
+            ordered = [selected_reasons[i] for i in ranked]
+        else:
+            ordered = []
+        return self.build_final_prompt(question, ordered), ordered
 
     def _apply_chat_template(self, prompt: str) -> str:
         if hasattr(self.tokenizer, "apply_chat_template") and self.tokenizer.chat_template:

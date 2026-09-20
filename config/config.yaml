@@ -91,18 +91,12 @@ qubo:
     hubo_triplet_penalty: 1.0
     embedder_device: null
 
-    # Fix #2 — Answer-aware off-diagonal: Q[i][j] = (α·cosine + β·answer_agree) × penalty_weight
-    # Two chains with the same extracted answer are penalised for co-selection even if their
-    # text embeddings appear diverse. Empty-answer chains never get agree=1.
-    answer_sim_weight:   0.6   # α: textual cosine similarity component
-    answer_agree_weight: 0.4   # β: logical agreement (same extracted answer)
-
-    # Fix #3 — Soft cardinality constraint: penalises solutions where Σx_i ≠ subset_size.
-    # Adds λ_c·(1−2k) to each diagonal and 2λ_c to each off-diagonal.
-    # Keep well below penalty_weight to avoid dominating the diversity signal.
-    # Needs empirical tuning per dataset — start at 0.1, increase if the solver
-    # frequently selects too few or too many chains.
-    cardinality_penalty: 0.1
+    # Duplicate-rationale penalty uses cosine only inside an answer group.
+    # Do not penalise traces that share a final answer (Debanjan point 5).
+    answer_sim_weight: 1.0
+    answer_agree_weight: 0.0
+    exact_k: true
+    cardinality_penalty: 0.0
 
     # Fix #6 — Top-k representatives per cluster fed to the QUBO.
     # Taking 2 (vs 1) lets the solver choose between the best and second-best
@@ -111,7 +105,9 @@ qubo:
     top_k_per_cluster: 2
 
 solver:
-    method: "simulated_annealing"
+    method: "auto"
+    exact_k: true
+    exhaustive_max_n: 20
     sa:
         initial_temp: 100.0
         final_temp: 0.01
@@ -139,6 +135,8 @@ training:
     warmup_steps: 100
 
 evaluation:
+    score_with_gold: false
+    report_ci: true
     device: "cuda:1"
     benchmarks:
         - "gsm8k"

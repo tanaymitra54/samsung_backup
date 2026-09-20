@@ -1,3 +1,8 @@
+"""Unused stub. Weights are hand-set in config.yaml, not learned here.
+
+Do not describe this module as a working hyperparameter learner.
+"""
+
 import yaml
 import numpy as np
 

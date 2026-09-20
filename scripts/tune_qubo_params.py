@@ -12,8 +12,8 @@ to evaluate all 81 combinations rapidly without re-running neural inference. Out
 scripts/tune_qubo_params.py  —  QUBO Hyperparameter Grid Search
 ================================================================
 
-Runs an 81-combination grid search over QUBO parameters on the first
-300 questions of GSM8K (test split) and saves the best configuration.
+Runs an 81-combination grid search over QUBO parameters on a hold-out
+slice of the GSM8K *train* split. Never loads the official test set.
 
 PARAMETER GRID (81 total combinations):
     penalty_weight:       [0.5, 1.0, 1.5]
@@ -109,7 +109,7 @@ _EXCLUSION_SCORE_THRESHOLD = 0.2
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Grid-search QUBO hyperparameters on GSM8K validation subset.",
+        description="Grid-search QUBO hyperparameters on a GSM8K train hold-out.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -121,7 +121,7 @@ def parse_args() -> argparse.Namespace:
         "--num-questions",
         type=int,
         default=300,
-        help="Number of GSM8K test questions to evaluate on.",
+        help="Number of GSM8K train-split questions to use as the tuning hold-out.",
     )
     parser.add_argument(
         "--resume",
@@ -185,14 +185,7 @@ def generate_all_combos() -> list[dict]:
 # =============================================================================
 
 def load_gsm8k(num_questions: int) -> list[dict]:
-    """Load the first `num_questions` examples from GSM8K test split.
-
-    Each returned dict has:
-        'question' : str   — the math problem text
-        'gold'     : float — the numeric answer extracted after "####"
-
-    Requires: datasets library (pip install datasets).
-    """
+    """Load `num_questions` examples from GSM8K train. Never uses test."""
     try:
         from datasets import load_dataset
     except ImportError as exc:
@@ -200,18 +193,17 @@ def load_gsm8k(num_questions: int) -> list[dict]:
             "The 'datasets' library is required: pip install datasets"
         ) from exc
 
-    print(f"[data] Loading GSM8K test split (first {num_questions} questions)...")
-    ds = load_dataset("gsm8k", "main", split="test")
+    print(f"[data] Loading GSM8K train split (first {num_questions} questions)...")
+    ds = load_dataset("gsm8k", "main", split="train")
     examples = []
     for item in ds:
         if len(examples) >= num_questions:
             break
         gold = extract_gsm8k_gold(item["answer"])
         if gold is None:
-            # Skip malformed entries (shouldn't happen in GSM8K, but be safe)
             continue
         examples.append({"question": item["question"], "gold": gold})
-    print(f"[data] Loaded {len(examples)} examples.")
+    print(f"[data] Loaded {len(examples)} train-holdout examples.")
     return examples
 
 
@@ -288,9 +280,9 @@ def cache_and_score_all(
         chains = sampler.sample(ex["question"], task_type="math")
 
         # Step 2: Score immediately (verifier params are fixed for all combos)
-        gold_str = str(ex["gold"])
-        verifier.score_batch(chains, task_type="math", gold=gold_str,
-                             question=ex["question"])
+        verifier.score_batch(
+            chains, task_type="math", gold=None, question=ex["question"]
+        )
 
         cached_scored_chains.append(chains)
 
@@ -422,25 +414,22 @@ def run_grid_search(
             chains = copy.deepcopy(cached_scored_chains[q_idx])
 
             try:
-                # Step 2: Build QUBO with current combo's parameters
-                Q, selected_indices = qubo_builder.build_qubo(chains)
+                from pipeline.answer_groups import keep_one_answer_group, pick_winning_group
+                from pipeline.selection import select_best_reasoning
 
-                # Step 3: Solve → binary state vector
-                state, _ = solver.solve(Q)
-
-                # Map state bits → sample indices in the original chain list
-                active_local = [i for i, bit in enumerate(state) if bit == 1]
-                if not active_local:
-                    # Fallback: pick the single highest-quality chain
-                    best_local = max(
-                        range(len(selected_indices)),
-                        key=lambda i: chains[selected_indices[i]].get(
-                            "correctness_score", 0.0
-                        ),
-                    )
-                    active_local = [best_local]
-
-                final_indices = [selected_indices[i] for i in active_local]
+                group_idx = pick_winning_group(chains)
+                group_chains = [chains[i] for i in group_idx]
+                Q, local_idx = qubo_builder.build_qubo(group_chains)
+                k = min(inf_pipeline.subset_size, len(group_chains))
+                state, _ = solver.solve(Q, k=k)
+                scores = [c.get("correctness_score", 0.0) for c in group_chains]
+                local_selected = select_best_reasoning(
+                    state, local_idx, len(group_chains), k, scores=scores
+                )
+                final_indices = keep_one_answer_group(
+                    chains,
+                    [group_idx[i] for i in local_selected if i < len(group_idx)],
+                )
 
                 # Step 4: Generate final answer from QUBO-selected reasons
                 final_answer = inf_pipeline.run(question, final_indices, chains)

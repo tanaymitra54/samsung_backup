@@ -50,7 +50,14 @@ def run_qubo_pipeline(
     question: str,
 ) -> str:
     result = run_one_query(
-        sampler, verifier, qubo_builder, solver, inference, question, task_type="math"
+        sampler,
+        verifier,
+        qubo_builder,
+        solver,
+        inference,
+        question,
+        task_type="math",
+        score_with_gold=False,
     )
     return result.get("answer", "")
 

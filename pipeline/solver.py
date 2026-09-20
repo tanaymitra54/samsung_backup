@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from copy import deepcopy
 
 from pipeline.device_utils import resolve_device
+from pipeline.qubo_math import exact_k_swap_anneal, qubo_energy, solve_qubo
 
 
 class SimulatedAnnealingSolver:
@@ -25,6 +26,10 @@ class SimulatedAnnealingSolver:
         self.num_parallel_reads = gpu_cfg.get("num_parallel_reads", 1024)
         self.use_parallel_tempering = gpu_cfg.get("use_parallel_tempering", False)
         self.use_counterdiabatic = gpu_cfg.get("use_counterdiabatic", False)
+        solver_cfg = self.config.get("solver", {})
+        self.exact_k = solver_cfg.get("exact_k", self.config.get("qubo", {}).get("exact_k", True))
+        self.exhaustive_max_n = solver_cfg.get("exhaustive_max_n", 20)
+        self.target_k = self.config.get("pipeline", {}).get("subset_size", 6)
 
     def _cuda_available(self):
         try:
@@ -34,9 +39,29 @@ class SimulatedAnnealingSolver:
             return False
 
     def _compute_energy(self, state: np.ndarray, Q: np.ndarray) -> float:
-        return state @ Q @ state
+        return qubo_energy(Q, state)
 
-    def solve(self, Q: np.ndarray) -> tuple[np.ndarray, float]:
+    def solve(self, Q: np.ndarray, k: int | None = None) -> tuple[np.ndarray, float]:
+        if Q is None or getattr(Q, "size", 0) == 0:
+            return np.array([], dtype=int), 0.0
+        Q_list = Q.tolist() if hasattr(Q, "tolist") else Q
+        n = len(Q_list)
+        if k is None and self.exact_k:
+            k = min(self.target_k, n)
+        if n <= self.exhaustive_max_n:
+            state, energy = solve_qubo(Q_list, k=k, exhaustive_max_n=self.exhaustive_max_n)
+            return np.array(state, dtype=int), float(energy)
+        if k is not None:
+            state, energy = exact_k_swap_anneal(
+                Q_list,
+                k,
+                initial_temp=self.initial_temp,
+                final_temp=self.final_temp,
+                cooling_rate=self.cooling_rate,
+                iterations=self.iterations,
+                num_reads=max(self.num_reads, 8),
+            )
+            return np.array(state, dtype=int), float(energy)
         if self.gpu_enabled:
             device = str(self.device)
             import torch
@@ -217,41 +242,13 @@ class QuantumSolver:
         """Fast CPU SA for small Q when OpenJij hangs (common under PyTorch+OpenMP)."""
         return self._fallback._solve_cpu(Q)
 
-    def solve(self, Q: np.ndarray) -> tuple[np.ndarray, float]:
+    def solve(self, Q: np.ndarray, k: int | None = None) -> tuple[np.ndarray, float]:
+        # n<=20 is exhaustive inside the fallback. OpenJij is not a ground-truth
+        # optimiser and is not used for the proof-of-concept size.
         if Q.size == 0:
             return np.array([], dtype=int), 0.0
-        try:
-            import openjij as oj  # noqa: F401
-        except ImportError:
-            return self._fallback_cpu(Q)
-
-        qubo = qubo_matrix_to_dict(Q)
-        if not qubo:
-            n = Q.shape[0]
-            return np.zeros(n, dtype=int), 0.0
-
-        try:
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                response = ex.submit(self._openjij_sample, qubo).result(
-                    timeout=self.timeout_s
-                )
-        except (FuturesTimeout, Exception) as exc:
-            print(
-                f"  OpenJij SQA unavailable ({exc}); using CPU simulated annealing"
-            )
-            return self._fallback_cpu(Q)
-
-        best = response.first
-        n = Q.shape[0]
-        state = np.array([int(best.sample.get(i, 0)) for i in range(n)], dtype=int)
-        energy = float(best.energy)
-        return state, energy
+        return self._fallback.solve(Q, k=k)
 
 
 def make_solver(config_path: str = "config/config.yaml", device: str | None = None):
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    method = config.get("solver", {}).get("method", "quantum")
-    if method in ("quantum", "sqa", "openjij"):
-        return QuantumSolver(config_path, device=device)
     return SimulatedAnnealingSolver(config_path, device=device)

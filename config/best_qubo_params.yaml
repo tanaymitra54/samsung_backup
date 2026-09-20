@@ -1,20 +1,15 @@
-# ==============================================================================
-# FILE: config/best_qubo_params.yaml
-# ROLE: Optimal QUBO Hyperparameter Configuration
-# BRANCH ADDITION (abhyuday): Newly created configuration file storing the
-# best-performing QUBO objective coefficients discovered via the 81-combination
-# grid search in `scripts/tune_qubo_params.py`. Used by the QUBO formulator during
-# optimal reasoning chain selection.
-# ==============================================================================
+# Stale grid search on GSM8K test is no longer used as a claimed optimum.
+# Retune on GSM8K train/val only (scripts/tune_qubo_params.py) on the H100.
+# These values are safe defaults after Debanjan's review: no answer-agree
+# penalty, exact K in the solver, no soft cardinality.
 
 penalty_weight: 1.0
 diversity_bonus: 0.1
-cardinality_penalty: 0.05
-answer_agree_weight: 0.3
-answer_sim_weight: 0.7
-validation_accuracy: 0.7778
+cardinality_penalty: 0.0
+answer_agree_weight: 0.0
+answer_sim_weight: 1.0
+exact_k: true
 notes: |
-  Derived from partial grid search (52/81 combos evaluated, pw=1.5 not yet tested).
-  All pw=1.0 combinations scored identically (7/9 correct on 10-question validation).
-  First pw=1.0 combo used as canonical best. The untested pw=1.5 range may score
-  equivalently or better, but pw=1.0 is a safe, well-supported choice.
+  Previous 0.7778 figure was 7/9 on 10 GSM8K test questions and is not a
+  validation result. Re-run tune_qubo_params.py on a train-split holdout
+  before any new accuracy claim.

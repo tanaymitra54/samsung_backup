@@ -45,10 +45,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def format_dpo_pair(question: str, chosen_trace: str, rejected_trace: str, gold_answer: str):
+def format_dpo_pair(
+    question: str,
+    chosen_trace: str,
+    rejected_trace: str,
+    chosen_answer: str,
+    rejected_answer: str,
+):
     prompt = f"<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n"
-    chosen = f"{chosen_trace}\n\nAnswer: {gold_answer}<|im_end|>"
-    rejected = f"{rejected_trace}\n\nAnswer: {gold_answer}<|im_end|>"
+    chosen = f"{chosen_trace}\n\nAnswer: {chosen_answer}<|im_end|>"
+    rejected = f"{rejected_trace}\n\nAnswer: {rejected_answer}<|im_end|>"
     return {"prompt": prompt, "chosen": chosen, "rejected": rejected}
 
 
@@ -81,11 +87,14 @@ def main():
     pairs = []
     for q in pos_by_q:
         if q in neg_by_q:
+            pos = pos_by_q[q][0]
+            neg = neg_by_q[q][0]
             pairs.append(format_dpo_pair(
                 q,
-                pos_by_q[q][0]["reasoning_trace"],
-                neg_by_q[q][0]["reasoning_trace"],
-                pos_by_q[q][0]["gold_answer"],
+                pos["reasoning_trace"],
+                neg["reasoning_trace"],
+                pos.get("answer") or pos.get("gold_answer") or "",
+                neg.get("answer") or "",
             ))
 
     if args.debug:

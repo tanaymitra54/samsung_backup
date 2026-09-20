@@ -1,17 +1,19 @@
 """
-==============================================================================
-FILE: scripts/generate_preference_pairs.py
-ROLE: DPO Preference Pair Dataset Generator
-BRANCH ADDITION (abhyuday): Newly introduced tool that extracts candidate reasoning
-chains from SFT data (`full_chains_pool`), ranks them by verifier quality score, and
-filters chosen vs rejected reasoning pairs with a minimum score margin (default 0.3)
-for Direct Preference Optimization (DPO).
-==============================================================================
+Build DPO pairs from the same prompt: one gold-verified correct chain and
+one gold-verified incorrect chain. Self-score is not the label.
 """
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from pipeline.preference_labels import chain_matches_gold, select_verified_pair
+
 
 def build_content(chain: dict) -> str:
     reason = chain.get("reason", "").strip()
@@ -20,93 +22,85 @@ def build_content(chain: dict) -> str:
         return f"{reason}\n\nAnswer: {answer}"
     return f"Answer: {answer}"
 
+
+def task_type_for(source: str) -> str:
+    return "math" if source in {"gsm8k", "math"} else "commonsense"
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Generate DPO preference pairs from QUBO data.")
-    parser.add_argument("--input", default="data/finetune_train.jsonl", help="Path to SFT JSONL with full_chains_pool")
-    parser.add_argument("--output", default="data/preference_pairs.jsonl", help="Output path for DPO JSONL")
-    parser.add_argument("--min-margin", type=float, default=0.3, help="Minimum score difference between chosen and rejected")
+    parser = argparse.ArgumentParser(
+        description="Generate DPO pairs from independently verified correct vs incorrect chains."
+    )
+    parser.add_argument("--input", default="data/finetune_train.jsonl")
+    parser.add_argument("--output", default="data/preference_pairs.jsonl")
     args = parser.parse_args()
 
     input_path = Path(args.input)
     output_path = Path(args.output)
-
     if not input_path.exists():
         print(f"Error: {input_path} does not exist. Run datagen first.")
         return
 
     pairs = []
     dropped_no_pool = 0
-    dropped_low_margin = 0
-    dropped_no_rejected = 0
+    dropped_no_gold = 0
+    dropped_unverified = 0
 
-    with open(input_path, "r", encoding="utf-8") as f:
+    with open(input_path, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             item = json.loads(line)
-            
-            # The prompt is the user message
             prompt = ""
             for msg in item.get("messages", []):
                 if msg.get("role") == "user":
                     prompt = msg.get("content", "")
                     break
-            
             meta = item.get("metadata", {})
-            chosen_score = meta.get("correctness_score", 0.0)
-            
+            gold = meta.get("gold", "")
             pool = meta.get("full_chains_pool", [])
             if not pool:
                 dropped_no_pool += 1
                 continue
-                
-            # The chosen chain's content is already in the assistant message, but we can also just build it
-            # The user asked for "full reasoning + answer"
-            chosen_content = ""
-            for msg in item.get("messages", []):
-                if msg.get("role") == "assistant":
-                    chosen_content = msg.get("content", "")
-                    break
-
-            # Find the lowest-scoring chain
-            lowest_chain = min(pool, key=lambda c: c.get("correctness_score", 0.0))
-            rejected_score = lowest_chain.get("correctness_score", 0.0)
-
-            if chosen_score - rejected_score >= args.min_margin:
-                rejected_content = build_content(lowest_chain)
-                if rejected_content.strip() == chosen_content.strip():
-                    # Same actual text despite different scores? Unlikely, but let's be safe.
-                    dropped_no_rejected += 1
-                    continue
-
-                pairs.append({
+            if not gold:
+                dropped_no_gold += 1
+                continue
+            task_type = task_type_for(meta.get("source", ""))
+            selected = select_verified_pair(pool, gold, task_type=task_type)
+            if selected is None:
+                dropped_unverified += 1
+                continue
+            chosen, rejected = selected
+            pairs.append(
+                {
                     "prompt": prompt,
-                    "chosen": chosen_content,
-                    "rejected": rejected_content,
-                    "chosen_score": chosen_score,
-                    "rejected_score": rejected_score,
-                    "margin": chosen_score - rejected_score,
-                })
-            else:
-                dropped_low_margin += 1
+                    "chosen": build_content(chosen),
+                    "rejected": build_content(rejected),
+                    "chosen_answer": chosen.get("answer", ""),
+                    "rejected_answer": rejected.get("answer", ""),
+                    "gold": gold,
+                    "chosen_verified_correct": chain_matches_gold(
+                        chosen, gold, task_type
+                    ),
+                    "rejected_verified_incorrect": not chain_matches_gold(
+                        rejected, gold, task_type
+                    ),
+                    "source": meta.get("source", ""),
+                }
+            )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         for p in pairs:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")
 
-    print("=" * 60)
-    print("DPO Preference Pair Generation")
-    print("=" * 60)
-    print(f"Total processed     : {len(pairs) + dropped_no_pool + dropped_low_margin + dropped_no_rejected}")
-    print(f"Pairs generated     : {len(pairs)}")
-    print(f"Dropped (no pool)   : {dropped_no_pool}")
-    print(f"Dropped (< margin)  : {dropped_low_margin}")
-    print(f"Dropped (same text) : {dropped_no_rejected}")
-    print(f"Saved to            : {output_path}")
-    if pairs:
-        avg_margin = sum(p["margin"] for p in pairs) / len(pairs)
-        print(f"Average margin      : {avg_margin:.3f}")
+    print("DPO Preference Pair Generation (verified correct vs incorrect)")
+    print(f"Pairs generated           : {len(pairs)}")
+    print(f"Dropped (no pool)         : {dropped_no_pool}")
+    print(f"Dropped (no gold)         : {dropped_no_gold}")
+    print(f"Dropped (no verified pair): {dropped_unverified}")
+    print(f"Saved to                  : {output_path}")
+
 
 if __name__ == "__main__":
     main()
