@@ -36,6 +36,13 @@ Verified here: `python3 tests/test_protocol.py` → **15 passed**.
 3. SFT, then DPO, with the new pairs.
 4. `python scripts/run_all_benchmarks.py` — read QUBO vs **SC-16 / Best-16**, plus CIs. Do not treat old 81/100 JSON as proof.
 
+Follow-up: **file** `config/config_fast.yaml` now matches exact-K / no answer-agree. HUBO energy and **file** `scripts/generate_comparison.py` use **function** `qubo_energy`. **file** `scripts/prepare_training_data.py` is marked legacy (test CSVs in `outputs/`).
+
+Follow-up after the explore pass: `config/config_fast.yaml` now matches
+exact-K / no answer-agree. HUBO energy and `scripts/generate_comparison.py`
+use `qubo_energy` (no doubled pairs). `scripts/prepare_training_data.py` is
+marked legacy — it still reads test CSVs from `outputs/`.
+
 ---
 
 ## Historical audit (branch `tanay`, HEAD `855ea22`, before the protocol reset)

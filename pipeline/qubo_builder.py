@@ -128,7 +128,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from pipeline.answer_groups import normalise_answer
 from pipeline.device_utils import resolve_device
-from pipeline.qubo_math import pairwise_penalty
+from pipeline.qubo_math import pairwise_penalty, qubo_energy
 
 
 class QUBOBuilder:
@@ -468,7 +468,7 @@ class QUBOBuilder:
         are simultaneously set to 1 — this is what makes it "higher order".
         Used by the simulated annealing solver when hubo_enabled=True.
         """
-        energy = state @ Q @ state
+        energy = qubo_energy(Q, state)
         for (i, j, k), val in T.items():
             energy += val * state[i] * state[j] * state[k]
         return float(energy)

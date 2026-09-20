@@ -52,9 +52,15 @@ qubo:
     hubo_enabled: false
     hubo_triplet_penalty: 1.0
     embedder_device: null
+    answer_sim_weight: 1.0
+    answer_agree_weight: 0.0
+    exact_k: true
+    cardinality_penalty: 0.0
 
 solver:
-    method: "simulated_annealing"
+    method: "auto"
+    exact_k: true
+    exhaustive_max_n: 20
     sa:
         initial_temp: 100.0
         final_temp: 0.01

@@ -2,9 +2,14 @@
 """
 Prepare training data with stratified sampling for fine-tuning.
 
-Data sources:
+Do not use this script for new SFT. It mixes OpenMathInstruct-2 with
+traces from outputs/ benchmark CSVs (test splits). That leaks eval items.
+
+Use scripts/generate_training_data.py (train / validation splits only).
+
+Data sources (legacy):
 1. nvidia/OpenMathInstruct-2  → stratified into reasoning types (20K sampled)
-2. Existing benchmark CSVs in outputs/ → high-signal evaluation traces (~100)
+2. Existing benchmark CSVs in outputs/ → test-split traces — do not train on these
 
 Total target: ~20K examples
 """
