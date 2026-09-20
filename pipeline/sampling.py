@@ -206,7 +206,7 @@ class DiverseSampler:
         ]
         return perturbations
 
-    def sample(self, question: str) -> list[dict]:
+    def sample(self, question: str, task_type: str | None = None) -> list[dict]:
         all_samples = []
         perturbations = self.perturb_prompt(question)
 

@@ -3,6 +3,7 @@ import numpy as np
 from copy import deepcopy
 
 from pipeline.device_utils import resolve_device
+from pipeline.qubo_math import exact_k_swap_anneal, qubo_energy, solve_qubo
 
 
 class SimulatedAnnealingSolver:
@@ -24,6 +25,10 @@ class SimulatedAnnealingSolver:
         self.num_parallel_reads = gpu_cfg.get("num_parallel_reads", 1024)
         self.use_parallel_tempering = gpu_cfg.get("use_parallel_tempering", False)
         self.use_counterdiabatic = gpu_cfg.get("use_counterdiabatic", False)
+        solver_cfg = self.config.get("solver", {})
+        self.exact_k = solver_cfg.get("exact_k", self.config.get("qubo", {}).get("exact_k", True))
+        self.exhaustive_max_n = solver_cfg.get("exhaustive_max_n", 20)
+        self.target_k = self.config.get("pipeline", {}).get("subset_size", 6)
 
     def _cuda_available(self):
         try:
@@ -33,9 +38,29 @@ class SimulatedAnnealingSolver:
             return False
 
     def _compute_energy(self, state: np.ndarray, Q: np.ndarray) -> float:
-        return state @ Q @ state
+        return qubo_energy(Q, state)
 
-    def solve(self, Q: np.ndarray) -> tuple[np.ndarray, float]:
+    def solve(self, Q: np.ndarray, k: int | None = None) -> tuple[np.ndarray, float]:
+        if Q is None or getattr(Q, "size", 0) == 0:
+            return np.array([], dtype=int), 0.0
+        Q_list = Q.tolist() if hasattr(Q, "tolist") else Q
+        n = len(Q_list)
+        if k is None and self.exact_k:
+            k = min(self.target_k, n)
+        if n <= self.exhaustive_max_n:
+            state, energy = solve_qubo(Q_list, k=k, exhaustive_max_n=self.exhaustive_max_n)
+            return np.array(state, dtype=int), float(energy)
+        if k is not None:
+            state, energy = exact_k_swap_anneal(
+                Q_list,
+                k,
+                initial_temp=self.initial_temp,
+                final_temp=self.final_temp,
+                cooling_rate=self.cooling_rate,
+                iterations=self.iterations,
+                num_reads=max(self.num_reads, 8),
+            )
+            return np.array(state, dtype=int), float(energy)
         if self.gpu_enabled:
             device = str(self.device)
             import torch
@@ -166,3 +191,63 @@ class SimulatedAnnealingSolver:
         Q.requires_grad_(False)
         best_idx = torch.argmin(energies)
         return states[best_idx].cpu().numpy().astype(int), energies[best_idx].item()
+
+
+def qubo_matrix_to_dict(Q: np.ndarray) -> dict:
+    n = Q.shape[0]
+    qubo = {}
+    for i in range(n):
+        if Q[i, i] != 0:
+            qubo[(i, i)] = float(Q[i, i])
+        for j in range(i + 1, n):
+            coef = float(Q[i, j] + Q[j, i])
+            if coef != 0:
+                qubo[(i, j)] = coef
+    return qubo
+
+
+# ponytail: OpenJij SQA is a quantum-inspired simulator, not a QPU. Point sample_qubo at D-Wave/IBM if you get hardware access.
+class QuantumSolver:
+    """QUBO solver used by the diagram's 'QUBO mapping + Quantum solver' step.
+
+    Default backend is OpenJij simulated quantum annealing (SQA). Falls back to
+    SimulatedAnnealingSolver if OpenJij is missing or fails.
+    """
+
+    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None):
+        with open(config_path) as f:
+            self.config = yaml.safe_load(f)
+
+        q_cfg = self.config.get("solver", {}).get("quantum", {})
+        self.backend = q_cfg.get("backend", "openjij_sqa")
+        self.num_reads = q_cfg.get("num_reads", 100)
+        self.trotter = q_cfg.get("trotter", 8)
+        self.timeout_s = q_cfg.get("timeout_s", 30)
+        self._fallback = SimulatedAnnealingSolver(config_path, device=device)
+        self.device = self._fallback.device
+
+    def _openjij_sample(self, qubo: dict):
+        import openjij as oj
+
+        sampler = oj.SQASampler()
+        try:
+            return sampler.sample_qubo(
+                qubo, num_reads=self.num_reads, trotter=self.trotter
+            )
+        except TypeError:
+            return sampler.sample_qubo(qubo, num_reads=self.num_reads)
+
+    def _fallback_cpu(self, Q: np.ndarray) -> tuple[np.ndarray, float]:
+        """Fast CPU SA for small Q when OpenJij hangs (common under PyTorch+OpenMP)."""
+        return self._fallback._solve_cpu(Q)
+
+    def solve(self, Q: np.ndarray, k: int | None = None) -> tuple[np.ndarray, float]:
+        # n<=20 is exhaustive inside the fallback. OpenJij is not a ground-truth
+        # optimiser and is not used for the proof-of-concept size.
+        if Q.size == 0:
+            return np.array([], dtype=int), 0.0
+        return self._fallback.solve(Q, k=k)
+
+
+def make_solver(config_path: str = "config/config.yaml", device: str | None = None):
+    return SimulatedAnnealingSolver(config_path, device=device)

@@ -1,0 +1,15 @@
+# Stale grid search on GSM8K test is no longer used as a claimed optimum.
+# Retune on GSM8K train/val only (scripts/tune_qubo_params.py) on the H100.
+# These values are safe defaults after Debanjan's review: no answer-agree
+# penalty, exact K in the solver, no soft cardinality.
+
+penalty_weight: 1.0
+diversity_bonus: 0.1
+cardinality_penalty: 0.0
+answer_agree_weight: 0.0
+answer_sim_weight: 1.0
+exact_k: true
+notes: |
+  Previous 0.7778 figure was 7/9 on 10 GSM8K test questions and is not a
+  validation result. Re-run tune_qubo_params.py on a train-split holdout
+  before any new accuracy claim.
