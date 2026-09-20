@@ -59,7 +59,9 @@ def compute_qubo_energy(selected_indices, Q, qubo_var_indices):
     for orig_idx in selected_indices:
         if orig_idx in idx_map:
             state[idx_map[orig_idx]] = 1
-    return float(state @ Q @ state)
+    from pipeline.qubo_math import qubo_energy
+
+    return float(qubo_energy(Q, state))
 
 
 def method_base(samples, Q, qubo_var_indices, solver):
