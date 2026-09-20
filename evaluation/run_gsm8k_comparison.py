@@ -13,7 +13,7 @@ from evaluation.answer_utils import (
     is_correct_prediction,
 )
 from pipeline.inference import InferencePipeline
-from pipeline.reasoning import run_reasoning_pipeline
+from pipeline.orchestrator import run_one_query
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
 from pipeline.solver import SimulatedAnnealingSolver
@@ -49,12 +49,19 @@ def run_qubo_pipeline(
     inference: InferencePipeline,
     question: str,
 ) -> str:
-    result = run_reasoning_pipeline(
-        sampler, verifier, qubo_builder, solver, inference, question, task_type="math"
+    result = run_one_query(
+        sampler,
+        verifier,
+        qubo_builder,
+        solver,
+        inference,
+        question,
+        task_type="math",
+        score_with_gold=False,
     )
     if not result:
         return ""
-    return result["predicted_answer"]
+    return result.get("answer") or result.get("predicted_answer") or ""
 
 
 def compute_summary(rows):

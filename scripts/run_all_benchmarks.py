@@ -33,11 +33,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from evaluation import BenchmarkRunner
 from evaluation.answer_utils import extract_predicted_answer, extract_gsm8k_gold, is_correct_prediction
 from pipeline.inference import InferencePipeline
-from pipeline.reasoning import run_reasoning_pipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
 from pipeline.device_utils import resolve_device
-from pipeline.solver import SimulatedAnnealingSolver
+from pipeline.solver import SimulatedAnnealingSolver, make_solver
+from pipeline.matched_baselines import best_of_n_answer, majority_vote_answers
+from pipeline.orchestrator import run_one_query
+from pipeline.stats_utils import binomial_ci
 from pipeline.verifier import ReasonVerifier
 
 
@@ -168,13 +170,64 @@ def run_qubo_pipeline(
     inference: InferencePipeline,
     question: str,
     task_type: str = "math",
+    gold: str = "",
+    is_mcq: bool = False,
+    samples=None,
 ) -> str:
-    result = run_reasoning_pipeline(
-        sampler, verifier, qubo_builder, solver, inference, question, task_type=task_type
+    result = run_one_query(
+        sampler,
+        verifier,
+        qubo_builder,
+        solver,
+        inference,
+        question,
+        task_type=task_type,
+        gold="",
+        is_mcq=is_mcq,
+        score_with_gold=False,
+        samples=samples,
     )
     if not result:
         return ""
-    return result["predicted_answer"]
+    return result.get("answer") or result.get("predicted_answer") or ""
+
+
+def run_matched_budget(
+    sampler,
+    verifier,
+    qubo_builder,
+    solver,
+    inference,
+    question: str,
+    benchmark: str,
+    task_type: str,
+    is_mcq: bool,
+    samples=None,
+):
+    """One sample pool → self-consistency, best-of-N, and QUBO."""
+    if samples is None:
+        samples = sampler.sample(question, task_type=task_type)
+    samples = verifier.score_batch(samples, task_type=task_type, gold=None)
+    sc = majority_vote_answers(
+        [
+            extract_answer(s.get("answer") or s.get("reason") or "", benchmark)
+            for s in samples
+        ]
+    )
+    bo = extract_answer(best_of_n_answer(samples), benchmark)
+    qubo_raw = run_qubo_pipeline(
+        sampler,
+        verifier,
+        qubo_builder,
+        solver,
+        inference,
+        question,
+        task_type=task_type,
+        gold="",
+        is_mcq=is_mcq,
+        samples=samples,
+    )
+    return sc, bo, extract_answer(qubo_raw, benchmark), samples
 
 
 def extract_answer(pred: str, benchmark: str) -> str:
@@ -210,8 +263,8 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
         "",
         "## Accuracy Summary",
         "",
-        "| Benchmark | Samples | Greedy | CoT | QUBO | Δ vs Greedy | Status |",
-        "|---|---:|---:|---:|---:|---:|---|",
+        "| Benchmark | Samples | Greedy | CoT | SC-16 | Best-16 | QUBO | Δ vs SC-16 | Status |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for b in config_benchmarks:
         if b not in results:
@@ -224,11 +277,13 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
             )
         else:
             a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
-            gain = r.get("abs_gain_vs_greedy", 0.0)
+            gain = r.get("abs_gain_vs_sc16", r.get("abs_gain_vs_greedy", 0.0))
             lines.append(
                 f"| {b} | {r.get('num_samples', 0)} "
                 f"| {a.get('greedy', 0.0):.2%} "
                 f"| {a.get('cot', 0.0):.2%} "
+                f"| {a.get('sc16', 0.0):.2%} "
+                f"| {a.get('best16', 0.0):.2%} "
                 f"| {a.get('qubo', 0.0):.2%} "
                 f"| {gain:+.2%} | ✓ Complete |"
             )
@@ -249,18 +304,24 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
             ])
         else:
             a = r.get("accuracy", {"greedy": 0.0, "cot": 0.0, "qubo": 0.0})
-            lines.extend([
-                f"### {b}",
-                "",
-                f"- Samples: {r.get('num_samples', 0)}",
-                f"- Failed samples: {r.get('failed_samples', 0)}",
-                f"- Greedy accuracy: {a.get('greedy', 0.0):.2%}",
-                f"- CoT accuracy: {a.get('cot', 0.0):.2%}",
-                f"- QUBO pipeline accuracy: {a.get('qubo', 0.0):.2%}",
-                f"- Absolute gain vs Greedy: {r.get('abs_gain_vs_greedy', 0.0):+.2%}",
-                f"- CoT gain over Greedy: {r.get('cot_gain_over_greedy', 0.0):+.2%}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"### {b}",
+                    "",
+                    f"- Samples: {r.get('num_samples', 0)}",
+                    f"- Failed samples: {r.get('failed_samples', 0)}",
+                    f"- Greedy accuracy: {a.get('greedy', 0.0):.2%}",
+                    f"- CoT (1 sample) accuracy: {a.get('cot', 0.0):.2%}",
+                    f"- Self-consistency 16 accuracy: {a.get('sc16', 0.0):.2%}",
+                    f"- Best-of-16 accuracy: {a.get('best16', 0.0):.2%}",
+                    f"- QUBO pipeline accuracy: {a.get('qubo', 0.0):.2%}",
+                    f"- Absolute gain vs Greedy: {r.get('abs_gain_vs_greedy', 0.0):+.2%}",
+                    f"- Absolute gain vs SC-16: {r.get('abs_gain_vs_sc16', 0.0):+.2%}",
+                    f"- Absolute gain vs Best-16: {r.get('abs_gain_vs_best16', 0.0):+.2%}",
+                    f"- 95% CI QUBO: {r.get('ci95', {}).get('qubo', {})}",
+                    "",
+                ]
+            )
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -308,9 +369,12 @@ def run_benchmark_on_gpu(
     results_rows = []
     correct_greedy = 0
     correct_cot = 0
+    correct_sc = 0
+    correct_best = 0
     correct_qubo = 0
     total = 0
     failed = 0
+    is_mcq = benchmark_name in IS_MCQ
 
     if use_batch and batch_size > 1 and torch.cuda.is_available():
         batch_greedy_fn = make_batch_greedy(inference)
@@ -326,35 +390,52 @@ def run_benchmark_on_gpu(
                 t2 = time.time()
                 for j, q in enumerate(batch_q):
                     gold = batch_gold[j]
-                    pred_q = run_qubo_pipeline(
-                        sampler, verifier, qubo_builder, solver, inference, q, task_type
+                    pred_sc, pred_bo, pred_qubo_n, _ = run_matched_budget(
+                        sampler,
+                        verifier,
+                        qubo_builder,
+                        solver,
+                        inference,
+                        q,
+                        benchmark_name,
+                        task_type,
+                        is_mcq,
                     )
-                    pred_qubo_n = extract_answer(pred_q, benchmark_name)
                     pred_g_n = extract_answer(preds_g[j], benchmark_name)
                     pred_c_n = extract_answer(preds_c[j], benchmark_name)
                     c_g = int(is_correct(pred_g_n, gold, benchmark_name))
                     c_c = int(is_correct(pred_c_n, gold, benchmark_name))
+                    c_sc = int(is_correct(pred_sc, gold, benchmark_name))
+                    c_bo = int(is_correct(pred_bo, gold, benchmark_name))
                     c_q = int(is_correct(pred_qubo_n, gold, benchmark_name))
                     correct_greedy += c_g
                     correct_cot += c_c
+                    correct_sc += c_sc
+                    correct_best += c_bo
                     correct_qubo += c_q
                     total += 1
-                    results_rows.append({
-                        "benchmark": benchmark_name,
-                        "id": i + j,
-                        "question": q,
-                        "gold": gold,
-                        "pred_greedy": pred_g_n,
-                        "pred_cot": pred_c_n,
-                        "pred_qubo": pred_qubo_n,
-                        "correct_greedy": c_g,
-                        "correct_cot": c_c,
-                        "correct_qubo": c_q,
-                        "runtime_greedy_s": round((t1 - t0) / len(batch_q), 4),
-                        "runtime_cot_s": round((t2 - t1) / len(batch_q), 4),
-                        "runtime_qubo_s": 0.0,
-                        "error": "",
-                    })
+                    results_rows.append(
+                        {
+                            "benchmark": benchmark_name,
+                            "id": i + j,
+                            "question": q,
+                            "gold": gold,
+                            "pred_greedy": pred_g_n,
+                            "pred_cot": pred_c_n,
+                            "pred_sc16": pred_sc,
+                            "pred_best16": pred_bo,
+                            "pred_qubo": pred_qubo_n,
+                            "correct_greedy": c_g,
+                            "correct_cot": c_c,
+                            "correct_sc16": c_sc,
+                            "correct_best16": c_bo,
+                            "correct_qubo": c_q,
+                            "runtime_greedy_s": round((t1 - t0) / len(batch_q), 4),
+                            "runtime_cot_s": round((t2 - t1) / len(batch_q), 4),
+                            "runtime_qubo_s": 0.0,
+                            "error": "",
+                        }
+                    )
             except Exception as e:
                 failed += len(batch_q)
                 for j in range(len(batch_q)):
@@ -376,30 +457,53 @@ def run_benchmark_on_gpu(
                 t1 = time.time()
                 pred_cot = baseline_cot(inference, q)
                 t2 = time.time()
-                pred_qubo = run_qubo_pipeline(
-                    sampler, verifier, qubo_builder, solver, inference, q, task_type
+                pred_sc, pred_bo, pred_q_n, _ = run_matched_budget(
+                    sampler,
+                    verifier,
+                    qubo_builder,
+                    solver,
+                    inference,
+                    q,
+                    benchmark_name,
+                    task_type,
+                    is_mcq,
                 )
                 t3 = time.time()
                 pred_g_n = extract_answer(pred_greedy, benchmark_name)
                 pred_c_n = extract_answer(pred_cot, benchmark_name)
-                pred_q_n = extract_answer(pred_qubo, benchmark_name)
                 c_g = int(is_correct(pred_g_n, gold, benchmark_name))
                 c_c = int(is_correct(pred_c_n, gold, benchmark_name))
+                c_sc = int(is_correct(pred_sc, gold, benchmark_name))
+                c_bo = int(is_correct(pred_bo, gold, benchmark_name))
                 c_q = int(is_correct(pred_q_n, gold, benchmark_name))
                 correct_greedy += c_g
                 correct_cot += c_c
+                correct_sc += c_sc
+                correct_best += c_bo
                 correct_qubo += c_q
                 total += 1
-                results_rows.append({
-                    "benchmark": benchmark_name,
-                    "id": idx, "question": q, "gold": gold,
-                    "pred_greedy": pred_g_n, "pred_cot": pred_c_n, "pred_qubo": pred_q_n,
-                    "correct_greedy": c_g, "correct_cot": c_c, "correct_qubo": c_q,
-                    "runtime_greedy_s": round(t1 - t0, 4),
-                    "runtime_cot_s": round(t2 - t1, 4),
-                    "runtime_qubo_s": round(t3 - t2, 4),
-                    "error": "",
-                })
+                results_rows.append(
+                    {
+                        "benchmark": benchmark_name,
+                        "id": idx,
+                        "question": q,
+                        "gold": gold,
+                        "pred_greedy": pred_g_n,
+                        "pred_cot": pred_c_n,
+                        "pred_sc16": pred_sc,
+                        "pred_best16": pred_bo,
+                        "pred_qubo": pred_q_n,
+                        "correct_greedy": c_g,
+                        "correct_cot": c_c,
+                        "correct_sc16": c_sc,
+                        "correct_best16": c_bo,
+                        "correct_qubo": c_q,
+                        "runtime_greedy_s": round(t1 - t0, 4),
+                        "runtime_cot_s": round(t2 - t1, 4),
+                        "runtime_qubo_s": round(t3 - t2, 4),
+                        "error": "",
+                    }
+                )
             except Exception as e:
                 failed += 1
                 results_rows.append({
@@ -412,14 +516,34 @@ def run_benchmark_on_gpu(
 
     acc_g = (correct_greedy / total) if total else 0.0
     acc_c = (correct_cot / total) if total else 0.0
+    acc_sc = (correct_sc / total) if total else 0.0
+    acc_bo = (correct_best / total) if total else 0.0
     acc_q = (correct_qubo / total) if total else 0.0
+    ci = {
+        "greedy": binomial_ci(correct_greedy, total),
+        "cot": binomial_ci(correct_cot, total),
+        "sc16": binomial_ci(correct_sc, total),
+        "best16": binomial_ci(correct_best, total),
+        "qubo": binomial_ci(correct_qubo, total),
+    }
 
     return {
         "benchmark": benchmark_name,
-        "accuracy": {"greedy": acc_g, "cot": acc_c, "qubo": acc_q},
+        "accuracy": {
+            "greedy": acc_g,
+            "cot": acc_c,
+            "sc16": acc_sc,
+            "best16": acc_bo,
+            "qubo": acc_q,
+        },
+        "ci95": {
+            k: {"rate": v[0], "low": v[1], "high": v[2]} for k, v in ci.items()
+        },
         "num_samples": total,
         "failed_samples": failed,
         "abs_gain_vs_greedy": acc_q - acc_g,
+        "abs_gain_vs_sc16": acc_q - acc_sc,
+        "abs_gain_vs_best16": acc_q - acc_bo,
         "cot_gain_over_greedy": acc_c - acc_g,
         "rows": results_rows,
     }

@@ -165,7 +165,7 @@ class ReasonVerifier:
         probs = torch.softmax(logits, dim=-1)
         return [float(value) for value in probs[:, self.entailment_index].tolist()]
 
-    def score_batch(self, samples: list[dict], task_type: str = "math") -> list[dict]:
+    def score_batch(self, samples: list[dict], task_type: str = "math", gold: str | None = None) -> list[dict]:
         """Score traces without the gold answer.
 
         S_SC is how often this trace's predicted answer appears.
