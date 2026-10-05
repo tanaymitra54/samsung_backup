@@ -2,14 +2,21 @@ import torch
 
 
 def resolve_device(preferred: str | None = None) -> torch.device:
+    if not torch.cuda.is_available():
+        if preferred and str(preferred).startswith("cuda"):
+            raise RuntimeError("NVIDIA GPU is required, but CUDA is not available.")
+        return torch.device("cpu")
+
+    count = torch.cuda.device_count()
     if preferred:
         device = torch.device(preferred)
-        if device.type == "cuda" and not torch.cuda.is_available():
-            return torch.device("cpu")
-        return device
-    if torch.cuda.is_available():
-        return torch.device("cuda:0")
-    return torch.device("cpu")
+        if device.type != "cuda":
+            return device
+        index = device.index or 0
+        if index < 0 or index >= count:
+            index = 0
+        return torch.device(f"cuda:{index}")
+    return torch.device("cuda:0")
 
 
 def hf_device_map_value(device: torch.device):

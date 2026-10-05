@@ -16,6 +16,7 @@ class InferencePipeline:
         device: str | None = None,
         use_vllm: bool | None = None,
         adapter_path: str | None = None,
+        load_in_4bit: bool | None = None,
     ):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
@@ -36,7 +37,8 @@ class InferencePipeline:
         if self.use_vllm:
             self.model = None
         else:
-            load_in_4bit = model_cfg.get("load_in_4bit", False)
+            if load_in_4bit is None:
+                load_in_4bit = model_cfg.get("load_in_4bit", False)
             self.model = self._load_model_with_fallbacks(model_cfg, load_in_4bit)
             if adapter_path:
                 from peft import PeftModel

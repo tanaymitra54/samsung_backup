@@ -11,8 +11,10 @@ import torch
 import yaml
 from datasets import Dataset, load_dataset
 from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainerCallback
 from trl import SFTConfig, SFTTrainer
+
+from training.progress_ui import PipelineProgress
 
 from evaluation import BenchmarkRunner
 from evaluation.answer_utils import (
@@ -26,6 +28,25 @@ from pipeline.reasoning import run_reasoning_pipeline
 from pipeline.sampling import DiverseSampler
 from pipeline.solver import SimulatedAnnealingSolver
 from pipeline.verifier import ReasonVerifier
+
+
+class _QLoRAProgress(TrainerCallback):
+    def __init__(self, progress: PipelineProgress):
+        self.progress = progress
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        total = state.max_steps or 1
+        self.progress.start_stage("QLoRA training", total, "Fine-tuning the adapter on the selected prompts.")
+
+    def on_step_end(self, args, state, control, **kwargs):
+        total = state.max_steps or max(state.global_step, 1)
+        self.progress.train_step(state.global_step, total)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not logs or "loss" not in logs:
+            return
+        total = state.max_steps or max(state.global_step, 1)
+        self.progress.train_step(state.global_step, total, float(logs["loss"]))
 
 
 TASK_TYPE = {
@@ -79,10 +100,23 @@ class QUBOSFTTrainer:
         self.eval_examples = train_cfg.get("eval_examples", eval_cfg.get("subset_size", 200))
         self.outputs_dir = train_cfg.get("outputs_dir", "./outputs/qlora_rounds")
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if not torch.cuda.is_available():
+            raise RuntimeError("This pipeline run requires an NVIDIA GPU, and CUDA is not available.")
+        self.device = "cuda:0"
+        self.gpu_name = torch.cuda.get_device_name(0)
+        free_bytes, _ = torch.cuda.mem_get_info(0)
+        self.free_gpu_mib = free_bytes / (1024 ** 2)
+        self.inference_4bit = self.free_gpu_mib < 12000
+        if self.inference_4bit:
+            self.batch_size = 1
+            self.max_seq_length = min(self.max_seq_length, 1024)
+        self.progress = PipelineProgress()
+        self.progress.set_gpu(
+            f"{self.gpu_name} on {self.device} | {self.free_gpu_mib:.0f} MiB free"
+        )
 
     def _build_bnb_config(self):
-        if not self.qlora or self.device != "cuda":
+        if not self.qlora or not str(self.device).startswith("cuda"):
             return None
         model_cfg = self.config["model"]
         return BitsAndBytesConfig(
@@ -98,12 +132,12 @@ class QUBOSFTTrainer:
         bnb_config = self._build_bnb_config()
         model_kwargs = {
             "cache_dir": self.cache_dir,
-            "device_map": "auto" if self.device == "cuda" else None,
-            "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+            "device_map": "auto" if str(self.device).startswith("cuda") else None,
+            "torch_dtype": torch.float16 if str(self.device).startswith("cuda") else torch.float32,
         }
         if bnb_config:
             model_kwargs["quantization_config"] = bnb_config
-        if self.attn_implementation and self.device == "cuda":
+        if self.attn_implementation and str(self.device).startswith("cuda"):
             model_kwargs["attn_implementation"] = self.attn_implementation
 
         model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
@@ -134,7 +168,7 @@ class QUBOSFTTrainer:
         run_name: Optional[str] = "qubo-sft-run",
         resume_adapter: Optional[str] = None,
     ) -> str:
-        if self.device != "cuda":
+        if not str(self.device).startswith("cuda"):
             raise RuntimeError("QLoRA training requires a CUDA-capable GPU.")
 
         model, tokenizer = self._build_model_and_tokenizer()
@@ -184,6 +218,7 @@ class QUBOSFTTrainer:
             train_dataset=dataset,
             processing_class=tokenizer,
             peft_config=peft_config,
+            callbacks=[_QLoRAProgress(self.progress)],
         )
         trainer.train()
         trainer.save_model(adapter_dir)
@@ -192,9 +227,12 @@ class QUBOSFTTrainer:
         return adapter_dir
 
     def _build_stack(self, adapter_path: Optional[str]):
-        device = self.config.get("evaluation", {}).get("device")
+        self.progress.note(f"Loading models onto {self.gpu_name} ({self.device})")
         inference = InferencePipeline(
-            self.config_path, device=device, adapter_path=adapter_path
+            self.config_path,
+            device=self.device,
+            adapter_path=adapter_path,
+            load_in_4bit=self.inference_4bit,
         )
         runtime_device = str(inference.device)
         sampler = DiverseSampler(
@@ -204,6 +242,8 @@ class QUBOSFTTrainer:
             shared_tokenizer=inference.tokenizer,
         )
         verifier = ReasonVerifier(self.config_path, device=runtime_device)
+        if self.inference_4bit and verifier.device.type == "cuda":
+            verifier.nli_model = verifier.nli_model.half()
         qubo_builder = QUBOBuilder(self.config_path, device=runtime_device)
         solver = SimulatedAnnealingSolver(self.config_path, device=runtime_device)
         return inference, sampler, verifier, qubo_builder, solver
@@ -221,7 +261,7 @@ class QUBOSFTTrainer:
     def _load_split(self, benchmark: str, split: str, limit: Optional[int]):
         if benchmark == "gsm8k":
             hf_split = "train" if split == "train" else "test"
-            dataset = load_dataset("gsm8k", "main", split=hf_split)
+            dataset = load_dataset("openai/gsm8k", "main", split=hf_split)
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
             questions = [item["question"] for item in dataset]
@@ -249,8 +289,12 @@ class QUBOSFTTrainer:
         task_type = TASK_TYPE.get(benchmark, "math")
         inference, sampler, verifier, qubo_builder, solver = self._build_stack(adapter_path)
         records = []
+        self.progress.start_stage(
+            "Benchmark answers" if generate_answer else "Select training traces",
+            len(questions),
+        )
         try:
-            for index, (question, gold) in enumerate(zip(questions, golds)):
+            for index, (question, gold) in enumerate(zip(questions, golds), start=1):
                 result = run_reasoning_pipeline(
                     sampler,
                     verifier,
@@ -262,6 +306,13 @@ class QUBOSFTTrainer:
                     generate_answer=generate_answer,
                 )
                 if not result or not result["selected_traces"]:
+                    self.progress.question_done({
+                        "index": index,
+                        "result": "SKIPPED",
+                        "gold": self._target_answer(gold, benchmark),
+                        "prediction": "",
+                        "question": " ".join(question.split())[:90],
+                    })
                     continue
                 prediction = result["predicted_answer"]
                 target = self._target_answer(gold, benchmark)
@@ -273,6 +324,15 @@ class QUBOSFTTrainer:
                         )
                     else:
                         correct = target.lower() in prediction.lower()
+                short_question = " ".join(question.split())[:90]
+                result_label = "CORRECT" if correct else "WRONG" if generate_answer else "SELECTED"
+                self.progress.question_done({
+                    "index": index,
+                    "result": result_label,
+                    "gold": target,
+                    "prediction": prediction if generate_answer else "",
+                    "question": short_question,
+                })
                 records.append({
                     "id": index,
                     "question": question,
@@ -305,6 +365,10 @@ class QUBOSFTTrainer:
         eval_limit = limit or self.eval_examples
         adapter_path = None
 
+        if self.inference_4bit:
+            self.progress.note(
+                f"{self.gpu_name} has {self.free_gpu_mib:.0f} MiB free, so the model runs in 4-bit on {self.device}."
+            )
         for round_idx in range(rounds):
             round_no = round_idx + 1
             round_dir = os.path.join(self.outputs_dir, f"round_{round_no}")
@@ -322,7 +386,7 @@ class QUBOSFTTrainer:
                 print("  No selected traces. Stopping.")
                 break
 
-            print(f"  QLoRA on {len(train_records)} final prompts...")
+            self.progress.note(f"QLoRA on {len(train_records)} final prompts using {self.gpu_name}.")
             dataset = self.prepare_dataset_from_pipeline(train_records)
             adapter_path = self.train(
                 dataset,
