@@ -13,6 +13,7 @@ from evaluation.answer_utils import (
     is_correct_prediction,
 )
 from pipeline.inference import InferencePipeline
+from pipeline.reasoning import run_reasoning_pipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
 from pipeline.solver import SimulatedAnnealingSolver
@@ -48,16 +49,12 @@ def run_qubo_pipeline(
     inference: InferencePipeline,
     question: str,
 ) -> str:
-    samples = sampler.sample(question)
-    if not samples:
+    result = run_reasoning_pipeline(
+        sampler, verifier, qubo_builder, solver, inference, question, task_type="math"
+    )
+    if not result:
         return ""
-    samples = verifier.score_batch(samples, task_type="math")
-    Q, qubo_var_indices = qubo_builder.build_qubo(samples)
-    state, _ = solver.solve(Q)
-    selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
-    if not selected_indices:
-        selected_indices = list(range(min(inference.subset_size, len(samples))))
-    return inference.run(question, selected_indices, samples)
+    return result["predicted_answer"]
 
 
 def compute_summary(rows):
