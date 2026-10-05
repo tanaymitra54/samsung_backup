@@ -24,6 +24,17 @@ verifier:
   nli_model: "cross-encoder/nli-deberta-v3-base"
   nli_threshold: 0.5
   device_map_verifier: null
+  weights:
+    math:
+      sc: 0.4
+      nli: 0.3
+      conf: 0.2
+      arith: 0.1
+    commonsense:
+      sc: 0.5
+      nli: 0.3
+      conf: 0.2
+      arith: 0.0
 
 qubo:
   max_vars: 200
