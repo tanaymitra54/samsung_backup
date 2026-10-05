@@ -27,7 +27,7 @@ class BenchmarkRunner:
         return text.strip()
 
     def load_gsm8k(self) -> tuple[list[str], list[str]]:
-        dataset = load_dataset("gsm8k", "main", split="test")
+        dataset = load_dataset("openai/gsm8k", "main", split="test")
         if not self.full_eval:
             dataset = dataset.select(range(min(self.subset_size, len(dataset))))
         questions = [item["question"] for item in dataset]

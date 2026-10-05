@@ -110,7 +110,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    dataset = load_dataset("gsm8k", "main", split="test")
+    dataset = load_dataset("openai/gsm8k", "main", split="test")
     if not args.full:
         dataset = dataset.select(range(min(args.subset_size, len(dataset))))
 
