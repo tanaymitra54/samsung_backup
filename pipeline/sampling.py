@@ -1,3 +1,4 @@
+import math
 import torch
 import yaml
 import random
@@ -103,9 +104,36 @@ class DiverseSampler:
             )
         return prompt
 
+    def _sequence_confidence(self, outputs, input_len: int) -> float:
+        """Geometric mean of generated-token probabilities, exp(mean log P(t_i))."""
+        scores = getattr(outputs, "scores", None)
+        sequences = getattr(outputs, "sequences", None)
+        if not scores or sequences is None:
+            return 0.0
+        gen_ids = sequences[0, input_len:]
+        special = {
+            token_id
+            for token_id in (self.tokenizer.pad_token_id, self.tokenizer.eos_token_id)
+            if token_id is not None
+        }
+        log_sum = 0.0
+        count = 0
+        for step, logits in enumerate(scores):
+            if step >= gen_ids.shape[0]:
+                break
+            token_id = int(gen_ids[step].item())
+            if token_id in special:
+                continue
+            log_prob = torch.log_softmax(logits[0].float(), dim=-1)[token_id]
+            log_sum += float(log_prob.item())
+            count += 1
+        if count == 0:
+            return 0.0
+        return float(min(1.0, max(0.0, math.exp(log_sum / count))))
+
     def generate_with_contrastive_decode(
         self, prompt: str, temperature: float, alpha: float = 0.1
-    ) -> str:
+    ) -> tuple[str, float]:
         chat_prompt = self._apply_chat_template(prompt)
         retry_limits = [
             (self.sampling_max_input_tokens, self.sampling_max_new_tokens),
@@ -131,13 +159,17 @@ class DiverseSampler:
                         top_p=self.top_p,
                         do_sample=True,
                         use_cache=False,
+                        output_scores=True,
+                        return_dict_in_generate=True,
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )
+                input_len = inputs["input_ids"].shape[1]
                 generated = self.tokenizer.decode(
-                    outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+                    outputs.sequences[0][input_len:], skip_special_tokens=True
                 )
-                return generated.strip()
+                confidence = self._sequence_confidence(outputs, input_len)
+                return generated.strip(), confidence
             except RuntimeError as e:
                 if "out of memory" not in str(e).lower():
                     raise
@@ -151,7 +183,7 @@ class DiverseSampler:
                 torch.cuda.empty_cache()
                 gc.collect()
 
-        return ""
+        return "", 0.0
 
     def _parse_reason_answer(self, text: str):
         lines = text.strip().split("\n")
@@ -184,7 +216,7 @@ class DiverseSampler:
                     self.config["pipeline"]["temperature_range"][0],
                     self.config["pipeline"]["temperature_range"][1],
                 )
-                generated = self.generate_with_contrastive_decode(
+                generated, confidence = self.generate_with_contrastive_decode(
                     prompt_temp, temperature=temp
                 )
                 reason, answer = self._parse_reason_answer(generated)
@@ -192,6 +224,7 @@ class DiverseSampler:
                     "reason": reason,
                     "answer": answer,
                     "diversity_score": 0.0,
+                    "confidence_score": confidence,
                     "temperature": temp,
                     "prompt_template": prompt_temp,
                 })

@@ -167,12 +167,11 @@ def run_qubo_pipeline(
     inference: InferencePipeline,
     question: str,
     task_type: str = "math",
-    gold: str = "",
 ) -> str:
     samples = sampler.sample(question)
     if not samples:
         return ""
-    samples = verifier.score_batch(samples, task_type=task_type, gold=gold)
+    samples = verifier.score_batch(samples, task_type=task_type)
     Q, qubo_var_indices = qubo_builder.build_qubo(samples)
     state, _ = solver.solve(Q)
     selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
@@ -331,7 +330,7 @@ def run_benchmark_on_gpu(
                 for j, q in enumerate(batch_q):
                     gold = batch_gold[j]
                     pred_q = run_qubo_pipeline(
-                        sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                        sampler, verifier, qubo_builder, solver, inference, q, task_type
                     )
                     pred_qubo_n = extract_answer(pred_q, benchmark_name)
                     pred_g_n = extract_answer(preds_g[j], benchmark_name)
@@ -381,7 +380,7 @@ def run_benchmark_on_gpu(
                 pred_cot = baseline_cot(inference, q)
                 t2 = time.time()
                 pred_qubo = run_qubo_pipeline(
-                    sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                    sampler, verifier, qubo_builder, solver, inference, q, task_type
                 )
                 t3 = time.time()
                 pred_g_n = extract_answer(pred_greedy, benchmark_name)
@@ -611,7 +610,7 @@ def main():
                             tq = time.time()
                             gold = batch_gold[j]
                             pred_qubo = run_qubo_pipeline(
-                                sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                                sampler, verifier, qubo_builder, solver, inference, q, task_type
                             )
                             tq_end = time.time()
                             print(f" done ({tq_end-tq:.1f}s)", flush=True)
@@ -686,7 +685,7 @@ def main():
                         
                         print(f"    → QUBO pipeline...", end='', flush=True)
                         pred_qubo = run_qubo_pipeline(
-                            sampler, verifier, qubo_builder, solver, inference, q, task_type, gold=gold
+                            sampler, verifier, qubo_builder, solver, inference, q, task_type
                         )
                         t3 = time.time()
                         print(f" {t3-t2:.1f}s", flush=True)
