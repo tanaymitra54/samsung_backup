@@ -10,7 +10,13 @@ from pipeline.device_utils import candidate_cuda_devices, resolve_device
 
 
 class InferencePipeline:
-    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None, use_vllm: bool | None = None):
+    def __init__(
+        self,
+        config_path: str = "config/config.yaml",
+        device: str | None = None,
+        use_vllm: bool | None = None,
+        adapter_path: str | None = None,
+    ):
         with open(config_path) as f:
             self.config = yaml.safe_load(f)
 
@@ -32,6 +38,9 @@ class InferencePipeline:
         else:
             load_in_4bit = model_cfg.get("load_in_4bit", False)
             self.model = self._load_model_with_fallbacks(model_cfg, load_in_4bit)
+            if adapter_path:
+                from peft import PeftModel
+                self.model = PeftModel.from_pretrained(self.model, adapter_path)
             if self.device.type == "cpu":
                 self.model = self.model.to(self.device)
             self.model.eval()
@@ -284,12 +293,30 @@ class InferencePipeline:
         outputs = self._vllm_model.generate(prompts, params)
         return [o.outputs[0].text.strip() for o in outputs]
 
+    def compose(
+        self,
+        question: str,
+        selected_indices: list[int],
+        samples: list[dict],
+        generate: bool = True,
+    ) -> dict:
+        selected_reasons = [
+            samples[i]["reason"] for i in selected_indices if 0 <= i < len(samples)
+        ]
+        if selected_reasons:
+            ranked_order = self._rank_reasons_by_relevance(selected_reasons, question)
+            ordered_reasons = [selected_reasons[i] for i in ranked_order]
+        else:
+            ordered_reasons = []
+        final_prompt = self.build_final_prompt(question, ordered_reasons)
+        answer = self.generate_answer(final_prompt) if generate else ""
+        return {
+            "selected_traces": ordered_reasons[: self.subset_size],
+            "final_prompt": final_prompt,
+            "predicted_answer": answer,
+        }
+
     def run(
         self, question: str, selected_indices: list[int], samples: list[dict]
     ) -> str:
-        selected_reasons = [samples[i]["reason"] for i in selected_indices]
-        ranked_order = self._rank_reasons_by_relevance(selected_reasons, question)
-        ordered_reasons = [selected_reasons[i] for i in ranked_order]
-
-        final_prompt = self.build_final_prompt(question, ordered_reasons)
-        return self.generate_answer(final_prompt)
+        return self.compose(question, selected_indices, samples, generate=True)["predicted_answer"]

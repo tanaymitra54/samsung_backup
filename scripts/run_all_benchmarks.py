@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from evaluation import BenchmarkRunner
 from evaluation.answer_utils import extract_predicted_answer, extract_gsm8k_gold, is_correct_prediction
 from pipeline.inference import InferencePipeline
+from pipeline.reasoning import run_reasoning_pipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
 from pipeline.device_utils import resolve_device
@@ -168,16 +169,12 @@ def run_qubo_pipeline(
     question: str,
     task_type: str = "math",
 ) -> str:
-    samples = sampler.sample(question)
-    if not samples:
+    result = run_reasoning_pipeline(
+        sampler, verifier, qubo_builder, solver, inference, question, task_type=task_type
+    )
+    if not result:
         return ""
-    samples = verifier.score_batch(samples, task_type=task_type)
-    Q, qubo_var_indices = qubo_builder.build_qubo(samples)
-    state, _ = solver.solve(Q)
-    selected_indices = [qubo_var_indices[i] for i in range(len(state)) if state[i] == 1]
-    if not selected_indices:
-        selected_indices = list(range(min(inference.subset_size, len(samples))))
-    return inference.run(question, selected_indices, samples)
+    return result["predicted_answer"]
 
 
 def extract_answer(pred: str, benchmark: str) -> str:

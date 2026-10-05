@@ -70,7 +70,13 @@ training:
   lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
   output_dir: "./checkpoints"
   use_peft: true
+  qlora: true
   iterative_rounds: 3
+  benchmark: "gsm8k"
+  trace_split: "train"
+  trace_examples: 200
+  eval_examples: 200
+  outputs_dir: "./outputs/qlora_rounds"
   max_seq_length: 2048
   warmup_steps: 100
 
