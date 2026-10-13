@@ -60,7 +60,7 @@ We use **Simulated Annealing** to solve the QUBO — it's inspired by how metals
 |---|---|
 | **Optimizer** | QUBO solved by **Simulated Annealing only** (CPU or GPU parallel reads). OpenJij was removed. |
 | **Default model** | `Qwen/Qwen2.5-3B-Instruct` (bf16, single GPU replica per worker) |
-| **Traces / question** | 16 (`num_answers: 4` × `num_reasons: 4`) |
+| **Traces / question** | 16 (`4` prompt templates × `pipeline.num_answers: 4`) |
 | **Benchmarks** | GSM8K · BBH · StrategyQA · ARC-Challenge · MMLU |
 | **Hardware** | NVIDIA RTX A6000 80 GB (multi-GPU job sharding supported) |
 | **Runbook** | [`run_script.md`](run_script.md) |
@@ -238,7 +238,7 @@ classDiagram
 flowchart LR
     subgraph "1. Generate"
         A[Question] --> B[4 prompt variations]
-        B --> C[8-16 candidate answers]
+        B --> C[16 candidate answers]
     end
     subgraph "2. Score"
         C --> D[Check arithmetic consistency]
@@ -263,7 +263,7 @@ flowchart LR
 
 | Step | What happens | Why it matters |
 |------|-------------|----------------|
-| **1. Generate** | Question is rewritten 4 ways (e.g., "Let's solve step by step..."). Each variation generates 2-4 answers at different temperatures (0.3 to 0.9). | One answer might miss the mark; 16 diverse attempts cover more ground. |
+| **1. Generate** | Question is rewritten 4 ways (e.g., "Let's solve step by step..."). Each variation samples `num_answers` answers at different temperatures (0.3 to 0.9) — 16 total at the default. | One answer might miss the mark; 16 diverse attempts cover more ground. |
 | **2. Score** | For math: extracts numbers and operations, checks arithmetic consistency. For commonsense: uses an NLI model to check if the reason supports the answer. | Filters out nonsense and hallucinated steps early. |
 | **3. Select** | Reasons are embedded, clustered, and the best per cluster is picked. A QUBO matrix is built where: diagonal = quality bonus, off-diagonal = redundancy penalty. Solved via simulated annealing. | Finds the small, high-quality, non-redundant subset — unlike naive top-K which picks redundant answers. |
 | **4. Answer** | Selected reasons are re-ranked by relevance to the question. A prompt is built: "Here are some reasoning steps: {reasons}. Based on these, answer: {question}". Final answer generated greedily. | The model sees the best curated reasoning before answering, improving accuracy. |
@@ -305,7 +305,7 @@ stateDiagram-v2
 ### `pipeline/sampling.py` - DiverseSampler
 **In short:** Ask the same question in many different ways at different "creativity" levels.
 
-- **How:** 4 prompt templates (e.g., "Let's solve step by step") × random temperatures (0.3-0.9) = 8-16 diverse answers
+- **How:** 4 prompt templates (e.g., "Let's solve step by step") × `pipeline.num_answers` samples at random temperatures (0.3-0.9) → **16** at the default `num_answers: 4`. (`num_reasons` is currently unused.)
 - **Output:** `{reason, answer, diversity_score, temperature, prompt_template}`
 - **Tradeoff:** more diversity → better coverage → slower inference
 

@@ -344,8 +344,8 @@ model:
   attn_implementation: "sdpa"
 
 pipeline:            # QUBO sampling
-  num_answers: 4     # ┐ 4 × 4 = 16 traces/question (see §8.1b)
-  num_reasons: 4     # ┘
+  num_answers: 4     # 4 samples per template × 4 templates = 16 traces/question
+  num_reasons: 4     # currently UNUSED (declared but not read by the sampler)
   subset_size: 6     # QUBO cardinality k — rationales kept for the final prompt
 
 qubo:
@@ -417,7 +417,7 @@ Other presets:
 | Custom | `--subset-size N` | N per benchmark (BBH/MMLU still split across tasks/subjects) |
 | Full datasets | `--full` or `full_eval: true` | Full HF sizes (e.g. GSM8K ~1,319; ARC ~1,172; BBH/MMLU much larger) |
 
-Per **question**, the QUBO path still draws **16 traces** (`num_answers: 4` × `num_reasons: 4`), independent of how many questions you evaluate.
+Per **question**, the QUBO path still draws **16 traces** = `pipeline.num_answers: 4` × **4 hardcoded prompt templates** (`pipeline/sampling.py`), independent of how many questions you evaluate. (`num_reasons` is declared but currently unused.)
 
 ### 8.1b Matched budget: who shares the 16 traces?
 
