@@ -66,11 +66,23 @@ def test_empty_answers_are_not_one_group():
     assert pick_winning_group(samples) == [2, 3]
 
 
-def test_winning_group_is_majority_then_score():
+def test_winning_group_weighted_vote_lets_confident_minority_win():
     samples = [
         {"answer": "A", "correctness_score": 0.2},
         {"answer": "A", "correctness_score": 0.2},
         {"answer": "B", "correctness_score": 0.99},
+    ]
+    # Weighted: B's confidence (0.99) beats A's two low-confidence votes (0.4).
+    assert pick_winning_group(samples) == [2]
+    # Plain majority is still available.
+    assert pick_winning_group(samples, weighted=False) == [0, 1]
+
+
+def test_winning_group_unweighted_falls_back_when_unscored():
+    samples = [
+        {"answer": "A"},
+        {"answer": "A"},
+        {"answer": "B"},
     ]
     assert pick_winning_group(samples) == [0, 1]
 

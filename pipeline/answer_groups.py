@@ -17,18 +17,29 @@ def group_indices_by_answer(samples: list[dict]) -> dict[str, list[int]]:
     return groups
 
 
-def pick_winning_group(samples: list[dict]) -> list[int]:
-    """Majority answer group. Tie-break by mean correctness_score."""
+def pick_winning_group(samples: list[dict], weighted: bool = True) -> list[int]:
+    """Winning answer group.
+
+    weighted=True (default): highest sum of correctness_score — a
+    confidence-weighted vote, so a small high-confidence group can beat a
+    larger low-confidence one. Falls back to a plain majority vote when every
+    score is missing/zero.
+
+    weighted=False: plain majority (count), tie-broken by mean correctness.
+    """
     groups = group_indices_by_answer(samples)
     if not groups:
         return list(range(len(samples)))
 
-    def key(item: tuple[str, list[int]]) -> tuple[int, float]:
-        idxs = item[1]
-        mean = sum(float(samples[i].get("correctness_score") or 0.0) for i in idxs) / len(
-            idxs
-        )
-        return (len(idxs), mean)
+    def score_stats(idxs: list[int]) -> tuple[float, int, float]:
+        scores = [float(samples[i].get("correctness_score") or 0.0) for i in idxs]
+        return sum(scores), len(idxs), sum(scores) / len(scores)
+
+    def key(item: tuple[str, list[int]]) -> tuple[float, int, float]:
+        total, count, mean = score_stats(item[1])
+        if weighted:
+            return (total, count, mean)
+        return (0.0, count, mean)
 
     _winner, idxs = max(groups.items(), key=key)
     return idxs
