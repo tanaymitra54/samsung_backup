@@ -668,8 +668,9 @@ def main():
 
         csv_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.csv")
         fieldnames = [
-            "benchmark", "id", "question", "gold", "pred_greedy", "pred_cot",
-            "pred_qubo", "correct_greedy", "correct_cot", "correct_qubo",
+            "benchmark", "id", "question", "gold",
+            "pred_greedy", "pred_cot", "pred_sc16", "pred_best16", "pred_qubo",
+            "correct_greedy", "correct_cot", "correct_sc16", "correct_best16", "correct_qubo",
             "runtime_greedy_s", "runtime_cot_s", "runtime_qubo_s", "error",
         ]
         csv_file = open(csv_path, "w", newline="", encoding="utf-8")
@@ -696,168 +697,112 @@ def main():
             sys.stdout.flush()
             correct_greedy = 0
             correct_cot = 0
+            correct_sc = 0
+            correct_best = 0
             correct_qubo = 0
             total = 0
             failed = 0
+            is_mcq = b in IS_MCQ
 
-            if use_batch and batch_size > 1:
-                print(f"  Using batched inference (batch_size={batch_size})")
-                sys.stdout.flush()
-                batch_greedy_fn = make_batch_greedy(inference)
-                batch_cot_fn = make_batch_cot(inference)
-                batch_total = (len(questions) + batch_size - 1) // batch_size
-                for i in range(0, len(questions), batch_size):
-                    batch_num = i // batch_size + 1
-                    batch_q = questions[i:i + batch_size]
-                    batch_gold = gold_answers[i:i + batch_size]
-                    
-                    print(f"  [Batch {batch_num}/{batch_total}] Processing questions {i+1}-{i+len(batch_q)}...")
-                    sys.stdout.flush()
-                    
-                    try:
-                        t0 = time.time()
-                        print(f"    → Greedy inference...", end='', flush=True)
-                        preds_g = batch_greedy_fn(batch_q)
-                        t1 = time.time()
-                        print(f" done ({t1-t0:.1f}s)")
-                        
-                        print(f"    → CoT inference...", end='', flush=True)
-                        preds_c = batch_cot_fn(batch_q)
-                        t2 = time.time()
-                        print(f" done ({t2-t1:.1f}s)")
-                        
-                        for j, q in enumerate(batch_q):
-                            print(f"    → QUBO pipeline (Q{i+j+1})...", end='', flush=True)
-                            tq = time.time()
-                            gold = batch_gold[j]
-                            pred_qubo = run_qubo_pipeline(
-                                sampler, verifier, qubo_builder, solver, inference, q, task_type
-                            )
-                            tq_end = time.time()
-                            print(f" done ({tq_end-tq:.1f}s)", flush=True)
-                            pred_g_n = extract_answer(preds_g[j], b)
-                            pred_c_n = extract_answer(preds_c[j], b)
-                            pred_q_n = extract_answer(pred_qubo, b)
-                            c_g = int(is_correct(pred_g_n, gold, b))
-                            c_c = int(is_correct(pred_c_n, gold, b))
-                            c_q = int(is_correct(pred_q_n, gold, b))
-                            correct_greedy += c_g
-                            correct_cot += c_c
-                            correct_qubo += c_q
-                            total += 1
-                            row = {
-                                "benchmark": b, "id": i + j, "question": q, "gold": gold,
-                                "pred_greedy": pred_g_n, "pred_cot": pred_c_n, "pred_qubo": pred_q_n,
-                                "correct_greedy": c_g, "correct_cot": c_c, "correct_qubo": c_q,
-                                "runtime_greedy_s": round((t1 - t0) / len(batch_q), 4),
-                                "runtime_cot_s": round((t2 - t1) / len(batch_q), 4),
-                                "runtime_qubo_s": round(tq_end - tq, 4),
-                                "error": "",
-                            }
-                            writer.writerow(row)
-                            all_rows.append(row)
-                            if len(all_rows) <= 3:
-                                print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(preds_g[j][:200])}' raw_c='{repr(preds_c[j][:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
-                        acc_g = (correct_greedy / total) * 100 if total else 0.0
-                        acc_c = (correct_cot / total) * 100 if total else 0.0
-                        acc_q = (correct_qubo / total) * 100 if total else 0.0
-                    except Exception as e:
-                        import traceback
-                        print(f"\n  ⚠️  BATCH ERROR (batch {batch_num}): {e}")
-                        traceback.print_exc()
-                        failed += len(batch_q)
-                        for j in range(len(batch_q)):
-                            row = {
-                                "benchmark": b, "id": i + j, "question": batch_q[j], "gold": batch_gold[j],
-                                "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
-                                "correct_greedy": 0, "correct_cot": 0, "correct_qubo": 0,
-                                "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
-                                "error": str(e),
-                            }
-                            writer.writerow(row)
+            print(f"  Using matched-budget eval (SC-16 / Best-16 / QUBO on same 16 traces)")
+            sys.stdout.flush()
+            for idx, (q, gold) in enumerate(list(zip(questions, gold_answers))):
+                print(f"  [Question {idx+1}/{len(questions)}] Processing...", flush=True)
+                try:
+                    t0 = time.time()
+                    print(f"    → Greedy...", end='', flush=True)
+                    pred_greedy = baseline_greedy(inference, q, b)
+                    t1 = time.time()
+                    print(f" {t1-t0:.1f}s", flush=True)
 
-                    acc_g = (correct_greedy / total) * 100 if total else 0.0
-                    acc_c = (correct_cot / total) * 100 if total else 0.0
-                    acc_q = (correct_qubo / total) * 100 if total else 0.0
-                    bar_len = 10
-                    filled = int(bar_len * batch_num / batch_total)
-                    bar = "█" * filled + "░" * (bar_len - filled)
-                    print(
-                        f"  {b:>8} {bar} {batch_num:>2}/{batch_total}"
-                        f"  |  g:{acc_g:>5.1f}%  c:{acc_c:>5.1f}%  q:{acc_q:>5.1f}%",
-                        flush=True,
+                    print(f"    → CoT...", end='', flush=True)
+                    pred_cot = baseline_cot(inference, q, b)
+                    t2 = time.time()
+                    print(f" {t2-t1:.1f}s", flush=True)
+
+                    print(f"    → Matched budget (SC/Best/QUBO)...", end='', flush=True)
+                    pred_sc, pred_bo, pred_q_n, _ = run_matched_budget(
+                        sampler,
+                        verifier,
+                        qubo_builder,
+                        solver,
+                        inference,
+                        q,
+                        b,
+                        task_type,
+                        is_mcq,
                     )
-            else:
-                print(f"  Using per-question inference (no batching)")
-                sys.stdout.flush()
-                for idx, (q, gold) in enumerate(list(zip(questions, gold_answers))):
-                    print(f"  [Question {idx+1}/{len(questions)}] Processing...", flush=True)
-                    try:
-                        t0 = time.time()
-                        print(f"    → Greedy...", end='', flush=True)
-                        pred_greedy = baseline_greedy(inference, q)
-                        t1 = time.time()
-                        print(f" {t1-t0:.1f}s", flush=True)
-                        
-                        print(f"    → CoT...", end='', flush=True)
-                        pred_cot = baseline_cot(inference, q)
-                        t2 = time.time()
-                        print(f" {t2-t1:.1f}s", flush=True)
-                        
-                        print(f"    → QUBO pipeline...", end='', flush=True)
-                        pred_qubo = run_qubo_pipeline(
-                            sampler, verifier, qubo_builder, solver, inference, q, task_type
-                        )
-                        t3 = time.time()
-                        print(f" {t3-t2:.1f}s", flush=True)
-                        pred_g_n = extract_answer(pred_greedy, b)
-                        pred_c_n = extract_answer(pred_cot, b)
-                        pred_q_n = extract_answer(pred_qubo, b)
-                        c_g = int(is_correct(pred_g_n, gold, b))
-                        c_c = int(is_correct(pred_c_n, gold, b))
-                        c_q = int(is_correct(pred_q_n, gold, b))
-                        correct_greedy += c_g
-                        correct_cot += c_c
-                        correct_qubo += c_q
-                        total += 1
-                        row = {
-                            "benchmark": b, "id": idx, "question": q, "gold": gold,
-                            "pred_greedy": pred_g_n, "pred_cot": pred_c_n, "pred_qubo": pred_q_n,
-                            "correct_greedy": c_g, "correct_cot": c_c, "correct_qubo": c_q,
-                            "runtime_greedy_s": round(t1 - t0, 4),
-                            "runtime_cot_s": round(t2 - t1, 4),
-                            "runtime_qubo_s": round(t3 - t2, 4),
-                            "error": "",
-                        }
-                        writer.writerow(row)
-                        all_rows.append(row)
-                        if len(all_rows) <= 3:
-                            print(f"  [DEBUG #{len(all_rows)}] {b} gold='{gold}' raw_g='{repr(pred_greedy[:200])}' raw_c='{repr(pred_cot[:200])}' ext_g='{pred_g_n}' ext_c='{pred_c_n}'")
-                    except Exception as e:
-                        import traceback
-                        print(f"  ⚠️  ERROR (question {idx}): {e}")
-                        traceback.print_exc()
-                        failed += 1
-                        row = {
-                            "benchmark": b, "id": idx, "question": q, "gold": gold,
-                            "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
-                            "correct_greedy": 0, "correct_cot": 0, "correct_qubo": 0,
-                            "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
-                            "error": str(e),
-                        }
-                        writer.writerow(row)
+                    t3 = time.time()
+                    print(f" {t3-t2:.1f}s", flush=True)
+                    pred_g_n = extract_answer(pred_greedy, b)
+                    pred_c_n = extract_answer(pred_cot, b)
+                    c_g = int(is_correct(pred_g_n, gold, b))
+                    c_c = int(is_correct(pred_c_n, gold, b))
+                    c_sc = int(is_correct(pred_sc, gold, b))
+                    c_bo = int(is_correct(pred_bo, gold, b))
+                    c_q = int(is_correct(pred_q_n, gold, b))
+                    correct_greedy += c_g
+                    correct_cot += c_c
+                    correct_sc += c_sc
+                    correct_best += c_bo
+                    correct_qubo += c_q
+                    total += 1
+                    row = {
+                        "benchmark": b, "id": idx, "question": q, "gold": gold,
+                        "pred_greedy": pred_g_n, "pred_cot": pred_c_n,
+                        "pred_sc16": pred_sc, "pred_best16": pred_bo, "pred_qubo": pred_q_n,
+                        "correct_greedy": c_g, "correct_cot": c_c,
+                        "correct_sc16": c_sc, "correct_best16": c_bo, "correct_qubo": c_q,
+                        "runtime_greedy_s": round(t1 - t0, 4),
+                        "runtime_cot_s": round(t2 - t1, 4),
+                        "runtime_qubo_s": round(t3 - t2, 4),
+                        "error": "",
+                    }
+                    writer.writerow(row)
+                    csv_file.flush()
+                    all_rows.append(row)
+                except Exception as e:
+                    import traceback
+                    print(f"  ⚠️  ERROR (question {idx}): {e}")
+                    traceback.print_exc()
+                    failed += 1
+                    row = {
+                        "benchmark": b, "id": idx, "question": q, "gold": gold,
+                        "pred_greedy": "", "pred_cot": "", "pred_sc16": "", "pred_best16": "", "pred_qubo": "",
+                        "correct_greedy": 0, "correct_cot": 0, "correct_sc16": 0, "correct_best16": 0, "correct_qubo": 0,
+                        "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
+                        "error": str(e),
+                    }
+                    writer.writerow(row)
+                    csv_file.flush()
 
             acc_greedy = (correct_greedy / total) if total else 0.0
             acc_cot = (correct_cot / total) if total else 0.0
+            acc_sc = (correct_sc / total) if total else 0.0
+            acc_bo = (correct_best / total) if total else 0.0
             acc_qubo = (correct_qubo / total) if total else 0.0
+            _, ci_lo, ci_hi = binomial_ci(correct_qubo, total)
             summary[b] = {
-                "accuracy": {"greedy": acc_greedy, "cot": acc_cot, "qubo": acc_qubo},
+                "accuracy": {
+                    "greedy": acc_greedy,
+                    "cot": acc_cot,
+                    "sc16": acc_sc,
+                    "best16": acc_bo,
+                    "qubo": acc_qubo,
+                },
                 "num_samples": total,
                 "failed_samples": failed,
                 "abs_gain_vs_greedy": acc_qubo - acc_greedy,
+                "abs_gain_vs_sc16": acc_qubo - acc_sc,
+                "abs_gain_vs_best16": acc_qubo - acc_bo,
                 "cot_gain_over_greedy": acc_cot - acc_greedy,
+                "ci95": {"qubo": {"rate": acc_qubo, "low": ci_lo, "high": ci_hi}},
             }
-            print(f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | QUBO: {acc_qubo:.2%} | samples={total} failed={failed}")
+            print(
+                f"  [{b}] Greedy: {acc_greedy:.2%} | CoT: {acc_cot:.2%} | "
+                f"SC-16: {acc_sc:.2%} | Best-16: {acc_bo:.2%} | QUBO: {acc_qubo:.2%} | "
+                f"samples={total} failed={failed}"
+            )
 
             if args.wandb_project:
                 try:
@@ -865,8 +810,10 @@ def main():
                     wandb.log({
                         f"{b}/accuracy_greedy": acc_greedy,
                         f"{b}/accuracy_cot": acc_cot,
+                        f"{b}/accuracy_sc16": acc_sc,
+                        f"{b}/accuracy_best16": acc_bo,
                         f"{b}/accuracy_qubo": acc_qubo,
-                        f"{b}/abs_gain_vs_greedy": acc_qubo - acc_greedy,
+                        f"{b}/abs_gain_vs_sc16": acc_qubo - acc_sc,
                         f"{b}/samples": total,
                     })
                 except ImportError:

@@ -101,3 +101,9 @@ evaluation:
   full_eval: false
   batch_size: 4
   use_batched_inference: true
+
+architecture_run:
+  eval_manifest: ./data/budget40/eval_manifest.jsonl
+  train_manifest: ./data/budget40/train_manifest.jsonl
+  outputs_dir: ./outputs/architecture_40q
+  resume: true

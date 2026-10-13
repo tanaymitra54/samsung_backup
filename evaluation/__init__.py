@@ -62,7 +62,40 @@ class BenchmarkRunner:
         return questions, answers
 
     def load_strategyqa(self) -> tuple[list[str], list[str]]:
-        raise NotImplementedError("StrategyQA dataset temporarily unavailable")
+        """Load StrategyQA yes/no questions from voidful/StrategyQA."""
+        try:
+            dataset = load_dataset("voidful/StrategyQA", split="train", streaming=True)
+            rows = []
+            limit = self.subset_size if not self.full_eval else 2000
+            for item in dataset:
+                rows.append(item)
+                if len(rows) >= max(limit * 5, 200):
+                    break
+        except Exception:
+            dataset = load_dataset("voidful/StrategyQA", split="train")
+            rows = list(dataset)
+            if not self.full_eval:
+                rows = rows[: self.subset_size]
+
+        if not self.full_eval:
+            rows = rows[: self.subset_size]
+
+        questions = [item["question"] for item in rows]
+        answers = ["yes" if item["answer"] else "no" for item in rows]
+        return questions, answers
+
+    @staticmethod
+    def load_manifest(path: str | Path) -> list[dict]:
+        """Load a curated budget/train manifest JSONL."""
+        path = Path(path)
+        rows = []
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                rows.append(json.loads(line))
+        return rows
 
     def load_mmlu(self) -> tuple[list[str], list[str]]:
         subjects = [
@@ -94,7 +127,7 @@ class BenchmarkRunner:
         return questions, answers
 
     def load_arc_challenge(self) -> tuple[list[str], list[str]]:
-        dataset = load_dataset("ai2_arc", "ARC-Challenge", split="test")
+        dataset = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")
         if not self.full_eval:
             dataset = dataset.select(range(min(self.subset_size, len(dataset))))
 
