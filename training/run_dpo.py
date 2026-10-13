@@ -11,7 +11,10 @@ Run AFTER SFT to further improve reasoning quality.
 import argparse
 import json
 import os
+import sys
 from importlib.metadata import version as imp_version
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import yaml
@@ -25,6 +28,8 @@ from transformers import (
     TrainingArguments,
 )
 from trl import DPOTrainer
+
+from pipeline.device_utils import hf_device_map_value, resolve_device, resolve_torch_dtype
 
 
 def parse_args():
@@ -109,18 +114,21 @@ def main():
 
     # ── Load model ───────────────────────────────────────────────
     print(f"\nLoading model: {model_name}")
+    device = resolve_device(config.get("evaluation", {}).get("device"))
+    dtype = resolve_torch_dtype(config)
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_compute_dtype=dtype,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
     )
+    device_map = hf_device_map_value(device)
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
+        device_map=device_map,
+        torch_dtype=dtype,
         attn_implementation="sdpa",
         cache_dir=cache_dir,
     )
@@ -130,8 +138,8 @@ def main():
     ref_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
+        device_map=device_map,
+        torch_dtype=dtype,
         attn_implementation="sdpa",
         cache_dir=cache_dir,
     )

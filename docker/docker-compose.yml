@@ -1,0 +1,38 @@
+# Protected GPU environment for the PRISM / QUBO pipeline.
+#
+# Usage (from samsung_backup/):
+#   cp docker/env.example .env   # optional secrets / GPU list
+#   docker compose -f docker/docker-compose.yml build
+#   docker compose -f docker/docker-compose.yml run --rm prism bash scripts/run_smoke.sh
+#
+# Restrict GPUs with CUDA_VISIBLE_DEVICES in .env (e.g. 0,1).
+
+services:
+  prism:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: prism-qubo:a6000
+    working_dir: /workspace
+    environment:
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      HF_HOME: /workspace/cache/huggingface
+      TRANSFORMERS_CACHE: /workspace/cache/models
+      HF_TOKEN: ${HF_TOKEN:-}
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      TOKENIZERS_PARALLELISM: "false"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ..:/workspace
+      - ../cache:/workspace/cache
+      - ../outputs:/workspace/outputs
+      - ../checkpoints:/workspace/checkpoints
+    shm_size: "16gb"
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    gpus: all
+    stdin_open: true
+    tty: true
+    command: ["bash"]

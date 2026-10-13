@@ -157,6 +157,150 @@ def _build_stack(config_path: str, device: str, adapter_path: str | None, load_i
     return inference, sampler, verifier, qubo_builder, solver
 
 
+def _eval_shard_worker(
+    gpu_id: int,
+    config_path: str,
+    shard_rows: list[dict],
+    stage: str,
+    adapter_path: str | None,
+    load_in_4bit: bool,
+    seed: int,
+) -> list[dict]:
+    """Process one eval shard on a single GPU; return rows (no shared-file writes)."""
+    worker_device = mask_worker_gpu(gpu_id)
+    set_seed(seed + gpu_id)
+    inference, sampler, verifier, qubo_builder, solver = _build_stack(
+        config_path, worker_device, adapter_path, load_in_4bit
+    )
+    out_rows: list[dict] = []
+    try:
+        for item in shard_rows:
+            bench = item["benchmark"]
+            source_id = str(item["source_id"])
+            question = item["question"]
+            gold = item["gold"]
+            task_type = item.get("task_type") or "math"
+            is_mcq = bool(item.get("is_mcq"))
+            try:
+                t0 = time.time()
+                pred_g = baseline_greedy(inference, question, bench)
+                t1 = time.time()
+                pred_c = baseline_cot(inference, question, bench)
+                t2 = time.time()
+                pred_sc, pred_bo, pred_q, _ = run_matched_budget(
+                    sampler,
+                    verifier,
+                    qubo_builder,
+                    solver,
+                    inference,
+                    question,
+                    bench,
+                    task_type,
+                    is_mcq,
+                )
+                t3 = time.time()
+                pred_g_n = extract_answer(pred_g, bench)
+                pred_c_n = extract_answer(pred_c, bench)
+                c_g = int(is_correct(pred_g_n, gold, bench))
+                c_c = int(is_correct(pred_c_n, gold, bench))
+                c_sc = int(is_correct(pred_sc, gold, bench))
+                c_bo = int(is_correct(pred_bo, gold, bench))
+                c_q = int(is_correct(pred_q, gold, bench))
+                out_rows.append(
+                    {
+                        "benchmark": bench,
+                        "id": source_id,
+                        "question": question,
+                        "gold": gold,
+                        "pred_greedy": pred_g_n,
+                        "pred_cot": pred_c_n,
+                        "pred_sc16": pred_sc,
+                        "pred_best16": pred_bo,
+                        "pred_qubo": pred_q,
+                        "correct_greedy": c_g,
+                        "correct_cot": c_c,
+                        "correct_sc16": c_sc,
+                        "correct_best16": c_bo,
+                        "correct_qubo": c_q,
+                        "runtime_greedy_s": round(t1 - t0, 4),
+                        "runtime_cot_s": round(t2 - t1, 4),
+                        "runtime_matched_s": round(t3 - t2, 4),
+                        "error": "",
+                        "stage": stage,
+                        "adapter": adapter_path or "",
+                    }
+                )
+            except Exception as exc:
+                out_rows.append(
+                    empty_error_row(
+                        benchmark=bench,
+                        source_id=source_id,
+                        question=question,
+                        gold=gold,
+                        stage=stage,
+                        adapter=adapter_path or "",
+                        error=str(exc),
+                    )
+                )
+    finally:
+        del inference, sampler, verifier, qubo_builder, solver
+    return out_rows
+
+
+def _train_shard_worker(
+    gpu_id: int,
+    config_path: str,
+    shard_rows: list[dict],
+    load_in_4bit: bool,
+    seed: int,
+) -> list[dict]:
+    """Collect train traces for one shard on a single GPU."""
+    worker_device = mask_worker_gpu(gpu_id)
+    set_seed(seed + gpu_id)
+    inference, sampler, verifier, qubo_builder, solver = _build_stack(
+        config_path, worker_device, None, load_in_4bit
+    )
+    records: list[dict] = []
+    try:
+        for item in shard_rows:
+            source_id = str(item["source_id"])
+            bench = item["benchmark"]
+            question = item["question"]
+            gold = item["gold"]
+            task_type = item.get("task_type") or "math"
+            result = run_reasoning_pipeline(
+                sampler,
+                verifier,
+                qubo_builder,
+                solver,
+                inference,
+                question,
+                task_type=task_type,
+                generate_answer=False,
+            )
+            if not result or not result.get("selected_traces"):
+                continue
+            target = gold.strip()
+            if bench == "gsm8k" and "####" in target:
+                target = extract_gsm8k_gold(target)
+            records.append(
+                {
+                    "source_id": source_id,
+                    "benchmark": bench,
+                    "question": question,
+                    "selected_traces": result["selected_traces"],
+                    "final_prompt": result["final_prompt"],
+                    "predicted_answer": "",
+                    "correct_answer": target,
+                    "correct": 0,
+                    "energy": result.get("energy", 0.0),
+                }
+            )
+    finally:
+        del inference, sampler, verifier, qubo_builder, solver
+    return records
+
+
 def run_matched_eval(
     *,
     config_path: str,
@@ -167,14 +311,56 @@ def run_matched_eval(
     resume: bool,
     device: str,
     load_in_4bit: bool,
+    gpu_ids: list[int] | None = None,
+    seed: int = 42,
 ) -> BudgetTableWriter:
     writer = BudgetTableWriter(outputs_dir, stage=stage)
     writer.rebuild()
+
+    pending = []
+    for item in eval_rows:
+        bench = item["benchmark"]
+        source_id = str(item["source_id"])
+        if resume and writer.is_done(bench, source_id, stage):
+            print(f"  [{stage}] skip {bench} {source_id}")
+            continue
+        pending.append(item)
+
+    if not pending:
+        return writer
+
+    use_multi = gpu_ids is not None and len(gpu_ids) > 1
+    if use_multi:
+        print(f"  [{stage}] multi-GPU eval on {len(gpu_ids)} GPUs ({len(pending)} questions)")
+        shards = shard_indices(len(pending), len(gpu_ids))
+        with ProcessPoolExecutor(max_workers=len(gpu_ids)) as executor:
+            futures = []
+            for gpu_id, idxs in zip(gpu_ids, shards):
+                if not idxs:
+                    continue
+                shard_rows = [pending[i] for i in idxs]
+                futures.append(
+                    executor.submit(
+                        _eval_shard_worker,
+                        gpu_id,
+                        config_path,
+                        shard_rows,
+                        stage,
+                        adapter_path,
+                        load_in_4bit,
+                        seed,
+                    )
+                )
+            for future in as_completed(futures):
+                for row in future.result():
+                    writer.append_row(row)
+        return writer
+
     inference, sampler, verifier, qubo_builder, solver = _build_stack(
         config_path, device, adapter_path, load_in_4bit
     )
     try:
-        for idx, item in enumerate(eval_rows, start=1):
+        for idx, item in enumerate(pending, start=1):
             bench = item["benchmark"]
             source_id = str(item["source_id"])
             question = item["question"]
@@ -182,11 +368,7 @@ def run_matched_eval(
             task_type = item.get("task_type") or "math"
             is_mcq = bool(item.get("is_mcq"))
 
-            if resume and writer.is_done(bench, source_id, stage):
-                print(f"  [{stage}] skip {bench} {source_id}")
-                continue
-
-            print(f"  [{stage}] {idx}/{len(eval_rows)} {bench} {source_id}")
+            print(f"  [{stage}] {idx}/{len(pending)} {bench} {source_id}")
             try:
                 t0 = time.time()
                 pred_g = baseline_greedy(inference, question, bench)
@@ -208,7 +390,6 @@ def run_matched_eval(
 
                 pred_g_n = extract_answer(pred_g, bench)
                 pred_c_n = extract_answer(pred_c, bench)
-                # SC/Best/QUBO already extracted inside run_matched_budget
                 c_g = int(is_correct(pred_g_n, gold, bench))
                 c_c = int(is_correct(pred_c_n, gold, bench))
                 c_sc = int(is_correct(pred_sc, gold, bench))
@@ -265,12 +446,11 @@ def collect_train_traces(
     resume: bool,
     device: str,
     load_in_4bit: bool,
+    gpu_ids: list[int] | None = None,
+    seed: int = 42,
 ) -> list[dict]:
     traces_path = round_dir / "train_traces.jsonl"
     done = _load_existing_trace_ids(traces_path) if resume else set()
-    inference, sampler, verifier, qubo_builder, solver = _build_stack(
-        config_path, device, None, load_in_4bit
-    )
     records: list[dict] = []
     # Reload already-written traces for QLoRA.
     if traces_path.exists():
@@ -280,17 +460,71 @@ def collect_train_traces(
                 if line:
                     records.append(json.loads(line))
 
+    pending = []
+    for item in train_rows:
+        source_id = str(item["source_id"])
+        if source_id in done:
+            print(f"  [train] skip {item['benchmark']} {source_id}")
+            continue
+        pending.append(item)
+
+    if not pending:
+        return records
+
+    use_multi = gpu_ids is not None and len(gpu_ids) > 1
+    if use_multi:
+        print(f"  [train] multi-GPU trace collection on {len(gpu_ids)} GPUs ({len(pending)} questions)")
+        shards = shard_indices(len(pending), len(gpu_ids))
+        new_rows: list[dict] = []
+        with ProcessPoolExecutor(max_workers=len(gpu_ids)) as executor:
+            futures = []
+            for gpu_id, idxs in zip(gpu_ids, shards):
+                if not idxs:
+                    continue
+                shard_rows = [pending[i] for i in idxs]
+                futures.append(
+                    executor.submit(
+                        _train_shard_worker,
+                        gpu_id,
+                        config_path,
+                        shard_rows,
+                        load_in_4bit,
+                        seed,
+                    )
+                )
+            for future in as_completed(futures):
+                new_rows.extend(future.result())
+
+        # Stable merge order by original train_rows order.
+        order = {str(r["source_id"]): i for i, r in enumerate(train_rows)}
+        new_rows.sort(key=lambda r: order.get(str(r["source_id"]), 10**9))
+        for row in new_rows:
+            row = dict(row)
+            row["id"] = len(records) + 1
+            _append_jsonl(traces_path, row)
+            records.append(row)
+        _write_stage(
+            round_dir / "stage.json",
+            {
+                "stage": "collecting_traces",
+                "n_traces": len(records),
+                "adapter": None,
+                "multi_gpu": True,
+            },
+        )
+        return records
+
+    inference, sampler, verifier, qubo_builder, solver = _build_stack(
+        config_path, device, None, load_in_4bit
+    )
     try:
-        for idx, item in enumerate(train_rows, start=1):
+        for idx, item in enumerate(pending, start=1):
             source_id = str(item["source_id"])
-            if source_id in done:
-                print(f"  [train] skip {item['benchmark']} {source_id}")
-                continue
             bench = item["benchmark"]
             question = item["question"]
             gold = item["gold"]
             task_type = item.get("task_type") or "math"
-            print(f"  [train] {idx}/{len(train_rows)} {bench} {source_id}")
+            print(f"  [train] {idx}/{len(pending)} {bench} {source_id}")
             result = run_reasoning_pipeline(
                 sampler,
                 verifier,
@@ -355,8 +589,25 @@ def main():
 
     eval_rows = _sort_manifest(BenchmarkRunner.load_manifest(eval_manifest))
     train_rows = _sort_manifest(BenchmarkRunner.load_manifest(train_manifest))
+    use_multi, gpu_ids = _should_use_multi_gpu(args, config)
+    multi_gpu_ids = gpu_ids if use_multi else None
+
     print(f"Eval panel: {len(eval_rows)}  Train panel: {len(train_rows)}")
     print(f"Outputs: {outputs_dir}  resume={resume}")
+    hw = config.get("hardware") or {}
+    if hw:
+        print(
+            f"Hardware target: {hw.get('gpu', '?')} {hw.get('vram_gb', '?')}GB "
+            f"dtype={hw.get('dtype', '?')}"
+        )
+    print(
+        f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {len(gpu_ids)} | "
+        f"multi_gpu={use_multi}"
+    )
+
+    # If user pinned --device cuda:N, mask parent so trainer + single-GPU path see it as cuda:0.
+    if args.device and str(args.device).startswith("cuda:") and not use_multi:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device).split(":", 1)[1]
 
     trainer = QUBOSFTTrainer(args.config)
     device = trainer.device
@@ -373,10 +624,12 @@ def main():
         resume=resume,
         device=device,
         load_in_4bit=load_in_4bit,
+        gpu_ids=multi_gpu_ids,
+        seed=args.seed,
     )
     _write_stage(
         outputs_dir / "round_1" / "stage.json",
-        {"stage": "base_eval_done", "adapter": None, "n_traces": 0},
+        {"stage": "base_eval_done", "adapter": None, "n_traces": 0, "multi_gpu": use_multi},
     )
 
     if args.skip_qlora:
@@ -396,6 +649,8 @@ def main():
             resume=resume,
             device=device,
             load_in_4bit=load_in_4bit,
+            gpu_ids=multi_gpu_ids,
+            seed=args.seed,
         )
         if not records:
             print("No training traces; stopping.")
@@ -405,6 +660,8 @@ def main():
             round_dir / "stage.json",
             {"stage": "qlora_starting", "adapter": adapter_path, "n_traces": len(records)},
         )
+        # QLoRA stays on one GPU so adapter writes are consistent.
+        print(f"  QLoRA training on {device} (single-GPU adapter write)")
         dataset = trainer.prepare_dataset_from_pipeline(records)
         adapter_path = trainer.train(
             dataset,
@@ -430,6 +687,8 @@ def main():
             resume=resume,
             device=device,
             load_in_4bit=load_in_4bit,
+            gpu_ids=multi_gpu_ids,
+            seed=args.seed,
         )
         _write_stage(
             round_dir / "stage.json",

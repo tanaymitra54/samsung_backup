@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.git
+.gitignore
+outputs
+checkpoints
+cache
+*.md
+!requirements.txt
+.env
+**/.DS_Store
+**/__pycache__

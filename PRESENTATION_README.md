@@ -161,138 +161,77 @@ For our PRISM comparison roadmap, the most relevant common benchmarks are GSM8K 
 
 ---
 
-## 10) H100 GPU Optimization Roadmap (Jun–Sep 2026)
+## 10) NVIDIA RTX A6000 (80 GB) + Multi-GPU Specs
 
-With **remote access to NVIDIA H100 GPUs (80 GB HBM3, FP8 Tensor Cores, 3.35 TB/s bandwidth)** via Fortinet VPN, the following advanced changes unlock the project's full potential across five phases.
+Target hardware is documented in `config/config.yaml` under `hardware`:
 
-### 10.1 Phase A — Quick Wins: FP8, Larger Models, FlashAttention
-
-**Goal:** Immediately leverage H100 hardware without architectural changes.
-
-| Change | Files | What & Why |
-|--------|-------|------------|
-| **A1. 4-bit quantization + FlashAttention** | `config/config.yaml`, `pipeline/sampling.py`, `pipeline/inference.py` | Load models in 4-bit NF4 (`BitsAndBytes`) + `attn_implementation="flash_attention_2"`. Reduces VRAM ~4x, enables 70B models on 80 GB; FlashAttention-2 gives 2-4x faster attention on H100. |
-| **A2. Upgrade default model** | `config/config.yaml` | Switch from `deepseek-coder-1.5b-instruct` (1.5B) to `Qwen/Qwen2.5-7B-Instruct` (7B) or `meta-llama/Llama-3.1-8B-Instruct` (8B). 4-bit quantized 8B model uses ~5 GB VRAM—leaves plenty for KV cache and batching. |
-| **A3. Scale sampling parameters** | `config/config.yaml` | Increase `num_answers: 4`, `num_reasons: 4` (from 2 each) → 16×4 = 64 diverse samples per question (vs 8 currently). H100's 3.35 TB/s bandwidth makes this fast. |
-| **A4. New dependencies** | `requirements.txt` | Add `bitsandbytes`, `flash-attn`, `peft`, `trl`, `vllm`, `wandb`, `accelerate` (already present). |
-
-**Technical detail — FP8 note:** H100 HBM3 GPUs have dedicated FP8 Tensor Cores. `transformers` `model.generate()` auto-accelerates float16 matmuls through Transformer Engine. For explicit FP8 KV cache, use `vLLM` with `quantization="fp8"` (Phase E).
-
----
-
-### 10.2 Phase B — Full-Scale Evaluation
-
-**Goal:** Run all 5 benchmarks at full dataset size with batched GPU inference.
-
-| Change | Files | What & Why |
-|--------|-------|------------|
-| **B1. Full-dataset benchmarks** | `config/config.yaml`, `scripts/run_all_benchmarks.py`, `evaluation/__init__.py` | Set `full_eval: true`. Run full GSM8K (1,319), MMLU (5 subjects ~3,000), StrategyQA (~2,290), ARC-Challenge (1,172), BBH (~6,500). H100 completes a 7B model inference at ~50-100 tok/s. |
-| **B2. Batch inference** | `scripts/run_all_benchmarks.py` | Group N questions, pad to max length, run one `model.generate(batch)` call. Reduces GPU kernel launch overhead 10-20x. |
-| **B3. Multi-GPU parallel benchmarks** | `scripts/run_all_benchmarks.py` | If multi-GPU: dispatch each benchmark to a different GPU via `ProcessPoolExecutor`. Each benchmark runs independently on its own GPU. |
-
-**Technical detail — batched generation:**
-```python
-# Tokenizer pads all inputs to same length
-inputs = tokenizer(questions, padding=True, return_tensors="pt").to("cuda")
-with torch.no_grad():
-    outputs = model.generate(**inputs, max_new_tokens=256)
+```yaml
+hardware:
+  gpu: "NVIDIA RTX A6000"
+  vram_gb: 80
+  multi_gpu: true
+  dtype: "bfloat16"
 ```
 
----
+Default SLM: **`Qwen/Qwen2.5-3B-Instruct`** in bfloat16. A 3B model uses ~6–8 GB weights, so one full replica (model + verifier + KV cache + batch 16) fits comfortably on a single 80 GB A6000. Parallelism is **job sharding**, not tensor-parallel: each GPU runs its own complete stack via `CUDA_VISIBLE_DEVICES`.
 
-### 10.3 Phase C — Training Pipeline (SFT Feedback Loop)
+### 10.1 Spec knobs (already in config)
 
-**Goal:** Convert inference-only gains into model parameter improvements via iterative fine-tuning. **Phase 3 from roadmap — currently a stub.**
+| Knob | Value | Why |
+|------|-------|-----|
+| Model | Qwen2.5-3B-Instruct | Matches architecture slide (SLM + QLoRA) |
+| `evaluation.batch_size` | 16 | A6000 headroom vs old batch 4 |
+| `training.batch_size` | 16 | QLoRA SFT throughput on 80 GB |
+| `pipeline.num_answers` × `num_reasons` | 4 × 4 = 16 traces | Majority answer, then diverse rationales |
+| `solver.gpu.num_parallel_reads` | 1024 | GPU simulated annealing |
+| `vllm.tensor_parallel_size` | 1 | Keep one model per GPU when vLLM is enabled |
+| `device_map` | single index (`hf_device_map_value`) | Prevents `auto` from spanning all cards |
 
-| Change | Files | What & Why |
-|--------|-------|------------|
-| **C1. QUBO trace collection** | `training/sft.py` | Run QUBO pipeline on training splits; collect `(question, selected_traces, correct_answer)` tuples. Filter: keep only samples where pipeline produced correct answer. Save as HF Dataset (JSONL). |
-| **C2. LoRA fine-tuning** | `training/sft.py` | Fine-tune Llama-3.1-8B with LoRA (`r=16`, `alpha=32`) via `peft` + `trl.SFTTrainer`. H100's 80 GB: batch size 8-16, 2-3 hours for 3 epochs on full GSM8K training set (~7.5k samples). |
-| **C3. Iterative self-improvement loop** | `training/sft.py` | Round 1: train on QUBO traces → improved model → run QUBO pipeline → better traces → Round 2: train on improved traces → repeat. Each iteration should improve accuracy. |
+### 10.2 Multi-GPU run mode
 
-**Technical detail — SFT with LoRA:**
-```python
-model = AutoModelForCausalLM.from_pretrained("model", quantization_config=bnb_config)
-model = prepare_model_for_kbit_training(model)
-peft_config = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj","v_proj","k_proj","o_proj"])
-trainer = SFTTrainer(model=model, train_dataset=dataset, args=TrainingArguments(...), peft_config=peft_config)
-trainer.train()
+When `hardware.multi_gpu: true` and more than one GPU is visible:
+
+1. **`scripts/run_all_benchmarks.py`** — auto multi-GPU:
+   - Multiple benchmarks → one (or more) benchmarks per GPU
+   - Single benchmark → questions sharded across GPUs, results merged
+2. **`scripts/run_architecture_pipeline.py`** — eval + train-trace collection sharded the same way; **QLoRA trains on one GPU** so adapter writes stay consistent
+3. Force single GPU: `--device cuda:N` or `--no-multi-gpu`
+4. Force multi-GPU: `--multi-gpu`
+
+```bash
+# Auto: use all visible A6000s
+python3 scripts/run_all_benchmarks.py --benchmarks gsm8k --subset-size 200
+
+# Pin one card
+python3 scripts/run_all_benchmarks.py --device cuda:1 --benchmarks gsm8k
+
+# Architecture loop (eval/traces multi-GPU, QLoRA single-GPU)
+python3 scripts/run_architecture_pipeline.py --config config/config.yaml
 ```
 
----
+Workers call `mask_worker_gpu(gpu_id)` from `pipeline/device_utils.py` so each process only sees one physical GPU as `cuda:0`.
 
-### 10.4 Phase D — GPU-Accelerated Optimization
+### 10.3 OOM / crowded-server notes
 
-**Goal:** Replace CPU solver with massively parallel GPU annealing; extend to HUBO.
+- Do **not** use `device_map="auto"` — it shards one model across every visible GPU and fights job-parallel runs.
+- If the machine is shared and VRAM is nearly full, free space or pick a free GPU with `--device cuda:N` rather than hoping fragmentation tips will help.
+- The &lt;12 GiB free → force 4-bit / batch-1 heuristic in `training/sft.py` only kicks in when headroom is actually low; A6000 80 GB runs keep config batch sizes.
 
-| Change | Files | What & Why |
-|--------|-------|------------|
-| **D1. GPU Simulated Annealing** | `pipeline/solver.py` | Port SA solver to GPU with 1024+ parallel reads (vs 2 on CPU). Each "chain" = independent state evolving in parallel via `torch` tensor ops. Expected: ~50 ms per solve (vs ~5 s CPU) = **100x speedup**. |
-| **D2. Parallel tempering** | `pipeline/solver.py` | N replicas at different temperatures exchange states periodically. Better at escaping local minima than single-temperature SA. Trivially parallel on GPU. |
-| **D3. Counterdiabatic annealing** | `pipeline/solver.py` | Add momentum term `λ(t)·dT/dt·Σ(∂E/∂x)²` to suppress freeze-out at phase transitions. Gradient computed via `torch.autograd`. |
-| **D4. HUBO extension** | `pipeline/qubo_builder.py` | Add triplet interaction terms (cubic): `E = xᵀQx + ΣTᵢⱼₖxᵢxⱼxₖ`. Triplet penalizes triple redundancy (e.g., three near-identical reasons). O(n³) matrix → H100 Tensor Cores essential. PyQUBO supports HUBO natively. |
+### 10.4 Optional next steps (same 80 GB class)
 
-**Technical detail — GPU SA (simplified):**
-```python
-states = torch.randint(0, 2, (num_reads, n), device="cuda")
-for t in cooling_schedule:
-    flip_idx = torch.randint(0, n, (num_reads,), device="cuda")
-    states[torch.arange(num_reads), flip_idx] ^= 1
-    new_energy = torch.einsum('ri,ij,rj->r', states, Q, states)
-    accept = (delta < 0) | (torch.rand(num_reads, device="cuda") < torch.exp(-delta / t))
-    states[~accept, flip_idx[~accept]] ^= 1
-```
-
----
-
-### 10.5 Phase E — Infrastructure & Experiment Tracking
-
-**Goal:** Production-quality throughput, reproducibility, and tracking.
-
-| Change | Files | What & Why |
-|--------|-------|------------|
-| **E1. vLLM integration** | `pipeline/inference.py` (optional backend) | Replace `transformers.generate()` with `vLLM.LLM.generate()` for benchmark inference. Supports FP8 KV cache, PagedAttention, continuous batching. 10-20x throughput improvement. |
-| **E2. Experiment tracking (W&B)** | `scripts/*.py`, `training/sft.py` | Log all benchmark accuracy, training loss, QUBO energy landscapes, hyperparameters to Weights & Biases. Enables systematic hyperparameter sweeps (LoRA rank, learning rate, penalty weights, etc.). |
-| **E3. VPN compatibility** | `config/config.yaml` | Ensure HF Hub downloads work through Fortinet VPN. Models/datasets use HTTPS → work through VPN. Add `HF_ENDPOINT` config option for corporate proxy workarounds. |
-
----
-
-### 10.6 Implementation Order & Timeline
-
-```
-Week 1 (Jun 15-21):  Phase A — FP8, larger model, FlashAttention, more samples
-                     → Verify: GSM8K @ subset-size 200 on H100
-
-Week 2 (Jun 22-28):  Phase B — Full-dataset benchmarks, batch inference, GPU dispatch
-                     → Verify: All 5 benchmarks @ full size, results CSV/JSON/MD
-
-Week 3 (Jun 29-Jul 5): Phase C — SFT training pipeline, LoRA fine-tuning
-                     → Verify: Accuracy improvement vs pre-training baseline
-
-Week 4 (Jul 6-12):   Phase D — GPU solver, parallel tempering, counterdiabatic, HUBO
-                     → Verify: Solver energy/time vs CPU baseline; HUBO on BBH
-
-Week 5 (Jul 13-19):  Phase E — vLLM, W&B tracking, final benchmark sweep
-                     → Verify: Complete benchmark dashboard with all methods
-```
-
-### 10.7 Expected Performance Improvement (GSM8K)
-
-| Stage | Method | Config | Est. Accuracy | Time per 200 Qs |
-|-------|--------|--------|:-------------:|:---------------:|
-| Current | deepseek-coder-1.5B + QUBO | CPU/FP32 | ~60-66% | ~30 min |
-| + Phase A | Qwen2.5-7B + QUBO | H100 4-bit | ~72-76% | ~5 min |
- | + Phase B | Full GSM8K eval | H100 batch | ~74-78% | ~8 min |
-| + Phase C | LoRA SFT on QUBO traces | H100 train | ~84-88% | — |
-| + Phase D | GPU SA + HUBO | H100 GPU | ~88-91% | ~3 min |
-| + Phase E | vLLM + W&B sweep | H100 tuned | **~91%** | ~2 min |
+| Item | Notes |
+|------|-------|
+| Full-dataset eval | `full_eval: true` or `--full` |
+| vLLM backend | `--use-vllm` with `tensor_parallel_size: 1` |
+| Larger SLM (4B–8B) | Still fits in bf16 on 80 GB; keep one replica per GPU |
+| W&B | `--wandb-project NAME` |
 
 ---
 
 ## 11) Common Q&A
 
 ### Q1: Which model are we using?
-Currently **`Qwen/Qwen2.5-1.5B-Instruct`** (1.5B parameters, ~3GB). This is an SLM (Small Language Model), matching the project's goal of running on small 3B-class models. Earlier we used `Qwen/Qwen2.5-7B-Instruct` (7B, an LLM) but it caused GPU OOM on crowded servers and was slower. Config: `config/config.yaml:2`.
+Currently **`Qwen/Qwen2.5-3B-Instruct`** (3B parameters, ~6–8 GB in bf16). This is an SLM (Small Language Model), matching the project's goal of running on small 3B-class models on **NVIDIA RTX A6000 80 GB** with multi-GPU job sharding. Config: `config/config.yaml` (`model.name` + `hardware`).
 
 ### Q2: What is the difference between Greedy, CoT, and QUBO?
 
@@ -331,12 +270,11 @@ Root causes (all fixed):
 4. **7B model** — too large when other processes already occupied GPU memory
 
 Fixes applied:
-- GPU masking via `CUDA_VISIBLE_DEVICES` before `torch` import (`scripts/run_all_benchmarks.py:14-25`)
-- Single device map `{"": device_index}` for 4-bit loads (`pipeline/device_utils.py:18`)
-- Shared model between inference + sampler (`scripts/run_all_benchmarks.py:492-496`)
-- `low_cpu_mem_usage=True` + direct GPU load (`pipeline/inference.py:54-55`)
-- OOM fallback retries with smaller input/output limits + `use_cache=False`
-- Switched to 1.5B SLM (`config/config.yaml:2`)
+- Pin `device_map` to one GPU index via `hf_device_map_value` (never `"auto"`)
+- Multi-GPU job sharding with per-worker `mask_worker_gpu` / `CUDA_VISIBLE_DEVICES`
+- Shared model between inference + sampler
+- `low_cpu_mem_usage=True` + OOM fallback retries
+- Default SLM: Qwen2.5-3B on A6000 80 GB (`config/config.yaml`)
 
 ### Q6: Why is the benchmark taking so long?
 Each question runs **16 model generations** in the sampler (4 perturbations × 4 temperatures). For 50 questions that's ~800 `model.generate()` calls. Even with a 1.5B model, each generation processes up to 256 tokens. The QUBO solver and verifier add more time. A full 200-question run can take 30-60 minutes depending on GPU contention.
@@ -400,14 +338,16 @@ The QUBO accuracy should be **higher** than both Greedy and CoT if the pipeline 
 
 ### Q13: What flags are available for the benchmark script?
 ```
---device cuda:N       Run on specific GPU (default: cuda:0)
+--device cuda:N       Pin to one GPU (disables auto multi-GPU)
 --benchmarks gsm8k    Run specific benchmark(s) only
 --subset-size N       Use N questions instead of full dataset
 --full                Run full dataset (ignores subset-size)
---batch-size N        Batch size for inference (default: 4)
+--batch-size N        Batch size for inference (default: 16 on A6000)
 --no-batch            Disable batched inference
 --use-vllm            Use vLLM backend instead of transformers
---multi-gpu           Distribute benchmarks across GPUs
+--multi-gpu           Force multi-GPU job sharding
+--no-multi-gpu        Force single-GPU even if many cards are visible
+--config PATH         Config YAML (default: config/config.yaml)
 --output-dir DIR      Output directory for results
 --seed N              Random seed (default: 42)
 ```
