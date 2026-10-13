@@ -1,0 +1,28 @@
+{
+  "checked_at_utc": "2026-10-13T09:00:31.319822+00:00",
+  "exit_status": 0,
+  "collected": 58,
+  "passed": 58,
+  "failed": 0,
+  "skipped": 0,
+  "python": "3.11.15",
+  "platform": "Windows",
+  "packages": {
+    "torch": "2.5.1+cpu",
+    "transformers": "4.51.3",
+    "trl": "0.19.1",
+    "peft": "0.15.2",
+    "accelerate": "1.7.0",
+    "datasets": "3.6.0",
+    "sentence-transformers": "4.1.0",
+    "scikit-learn": "1.6.1",
+    "numpy": "1.26.4",
+    "pyarrow": "20.0.0",
+    "pandas": "2.2.3",
+    "huggingface-hub": "0.36.0"
+  },
+  "cuda_available": false,
+  "cuda_runtime": null,
+  "scope": "Protocol tests and real PyTorch tiny/random-model runtime tests; no pretrained benchmark accuracy or A6000/NCCL qualification",
+  "environment_metadata_checked_at_utc": "2026-10-13T09:06:34.377673+00:00"
+}

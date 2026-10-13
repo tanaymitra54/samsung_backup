@@ -1,5 +1,5 @@
-# PRISM / QUBO pipeline — CUDA 12.1 runtime for NVIDIA A6000 (80GB)
-FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+# Python 3.11 + cu121 wheels, same stack as the cluster venv.
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -20,7 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python deps first for layer caching
 COPY requirements.txt /workspace/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121 \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip check
 
 # Project code (compose also bind-mounts for live edits)
 COPY . /workspace

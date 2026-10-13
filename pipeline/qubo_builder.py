@@ -32,7 +32,8 @@ class QUBOBuilder:
 
         preferred_device = device or self.config.get("evaluation", {}).get("device")
         embedder_device = qubo_cfg.get("embedder_device") or str(resolve_device(preferred_device))
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
+        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device,
+                                            cache_folder=self.config.get("model", {}).get("cache_dir"))
 
     def _embed_reasons(self, reasons: list[str]) -> np.ndarray:
         return self.embedder.encode(reasons, convert_to_numpy=True)

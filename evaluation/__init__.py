@@ -1,9 +1,13 @@
 import yaml
 import json
-import torch
 import re
 from pathlib import Path
-from datasets import load_dataset
+
+
+def load_dataset(*args, **kwargs):
+    # Keep scoring and offline diagnostics usable without loading the ML stack.
+    from datasets import load_dataset as hf_load_dataset
+    return hf_load_dataset(*args, **kwargs)
 
 
 class BenchmarkRunner:

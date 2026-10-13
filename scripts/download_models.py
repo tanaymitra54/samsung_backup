@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download candidate SLM weights into config cache_dir."""
+"""Prefetch the configured LLM, verifier and embedder into one model cache."""
 
 import argparse
 import os
@@ -7,13 +7,6 @@ import sys
 
 import yaml
 from huggingface_hub import snapshot_download
-
-DEFAULT_MODELS = [
-    "Qwen/Qwen3.5-4B",
-    "meta-llama/Llama-3.2-3B-Instruct",
-    "microsoft/Phi-4-mini-reasoning",
-]
-
 
 def load_config(config_path: str) -> dict:
     with open(config_path, encoding="utf-8") as f:
@@ -28,7 +21,7 @@ def main():
 
     cfg = load_config(args.config)
     cache_dir = cfg.get("model", {}).get("cache_dir", "./cache/models")
-    models = args.models or cfg.get("model", {}).get("candidates") or DEFAULT_MODELS
+    models = args.models or [cfg["model"]["name"], cfg["verifier"]["nli_model"], "sentence-transformers/all-MiniLM-L6-v2"]
 
     os.makedirs(cache_dir, exist_ok=True)
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")

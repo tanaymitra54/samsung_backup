@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 import sys
 import time
@@ -333,7 +334,7 @@ def run_matched_eval(
     if use_multi:
         print(f"  [{stage}] multi-GPU eval on {len(gpu_ids)} GPUs ({len(pending)} questions)")
         shards = shard_indices(len(pending), len(gpu_ids))
-        with ProcessPoolExecutor(max_workers=len(gpu_ids)) as executor:
+        with ProcessPoolExecutor(max_workers=len(gpu_ids), mp_context=multiprocessing.get_context("spawn")) as executor:
             futures = []
             for gpu_id, idxs in zip(gpu_ids, shards):
                 if not idxs:
@@ -476,7 +477,7 @@ def collect_train_traces(
         print(f"  [train] multi-GPU trace collection on {len(gpu_ids)} GPUs ({len(pending)} questions)")
         shards = shard_indices(len(pending), len(gpu_ids))
         new_rows: list[dict] = []
-        with ProcessPoolExecutor(max_workers=len(gpu_ids)) as executor:
+        with ProcessPoolExecutor(max_workers=len(gpu_ids), mp_context=multiprocessing.get_context("spawn")) as executor:
             futures = []
             for gpu_id, idxs in zip(gpu_ids, shards):
                 if not idxs:

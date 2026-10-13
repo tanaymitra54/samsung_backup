@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from evaluation.strict_answers import canonical_answer
 
 
 def _last_number(text: str | None) -> float | None:
@@ -25,20 +26,17 @@ def chain_matches_gold(chain: dict, gold, task_type: str = "math") -> bool:
     pred = chain.get("answer") or ""
     gold_s = "" if gold is None else str(gold)
     if task_type == "math":
-        pred_n = _last_number(pred) or _last_number(chain.get("reason"))
-        gold_n = _last_number(gold_s)
-        if pred_n is None or gold_n is None:
-            return False
-        tol = max(0.01, 0.01 * abs(gold_n))
-        return abs(pred_n - gold_n) <= tol
-    pred_n = _norm(pred)
-    gold_n = _norm(gold_s)
-    if not pred_n or not gold_n:
-        return False
-    if pred_n == gold_n:
-        return True
-    yes_no = {"yes": "true", "true": "yes", "no": "false", "false": "no"}
-    return yes_no.get(pred_n) == gold_n or gold_n in pred_n or pred_n in gold_n
+        kind = "numeric"
+    elif gold_s.strip().lower() in {"yes", "no", "true", "false"}:
+        kind = "boolean"
+    elif re.fullmatch(r"\(?[A-Z]\)?", gold_s.strip()):
+        kind = "choice"
+    else:
+        kind = "text"
+    labels = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    predicted = canonical_answer(pred or chain.get("reason", ""), kind, labels)
+    target = canonical_answer(gold_s, kind, labels)
+    return bool(predicted and target and predicted == target)
 
 
 def select_verified_pair(

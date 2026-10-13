@@ -94,6 +94,7 @@ class QUBOSFTTrainer:
         self.output_dir = train_cfg["output_dir"]
         self.max_seq_length = train_cfg.get("max_seq_length", 2048)
         self.warmup_steps = train_cfg.get("warmup_steps", 100)
+        self.warmup_ratio = train_cfg.get("warmup_ratio", 0.0)
         self.iterative_rounds = train_cfg.get("iterative_rounds", 3)
         self.benchmark = train_cfg.get("benchmark", "gsm8k")
         self.trace_split = train_cfg.get("trace_split", "train")
@@ -111,7 +112,7 @@ class QUBOSFTTrainer:
         free_bytes, _ = torch.cuda.mem_get_info(device_index)
         self.free_gpu_mib = free_bytes / (1024 ** 2)
         # Only force 4-bit / tiny batches when VRAM is actually tight (<12 GiB free).
-        # A6000 80GB runs stay in bf16 with config batch sizes.
+        # RTX A6000 48GB runs use configured batch sizes when memory permits.
         self.inference_4bit = self.free_gpu_mib < 12000 or bool(model_cfg.get("load_in_4bit", False))
         if self.free_gpu_mib < 12000:
             self.batch_size = 1
@@ -206,8 +207,10 @@ class QUBOSFTTrainer:
             gradient_accumulation_steps=2,
             learning_rate=self.learning_rate,
             warmup_steps=self.warmup_steps,
+            warmup_ratio=self.warmup_ratio,
             num_train_epochs=self.sft_epochs,
-            fp16=True,
+            fp16=not torch.cuda.is_bf16_supported(),
+            bf16=torch.cuda.is_bf16_supported(),
             logging_steps=10,
             save_steps=500,
             save_total_limit=2,
@@ -276,15 +279,11 @@ class QUBOSFTTrainer:
             golds = [extract_gsm8k_gold(item["answer"]) for item in dataset]
             return questions, golds
 
-        runner = BenchmarkRunner(self.config_path)
-        if limit:
-            runner.subset_size = limit
-            runner.full_eval = False
-        questions, golds = runner.load_benchmark(benchmark)
-        if limit:
-            questions = questions[:limit]
-            golds = golds[:limit]
-        return questions, golds
+        from evaluation.diagnostic_data import load_pool, select_examples
+        if split not in {"train", "test"}:
+            raise ValueError("SFT supports reserved train/test roles only")
+        rows = select_examples(load_pool(benchmark, "fit" if split == "train" else "eval"), limit, 42)
+        return [r["question"] for r in rows], [r["gold"] for r in rows]
 
     def _run_pipeline_split(
         self,

@@ -1,11 +1,11 @@
 # Budget-40 panel
 
-Fixed panels for the matched-budget outcomes table and the architecture QLoRA loop.
+Legacy fixed panels for the architecture QLoRA loop. These are functional checks, not the new CoT-16 / Greedy-top-six diagnostic evaluation. Use [the cluster guide](../../docs/cluster/README.md) for the maintained workflow.
 
 | Manifest | Size | Role |
 |---|---:|---|
 | `eval_manifest.jsonl` | 40 | Test / held-out graded questions (8 × 5 benchmarks) |
-| `train_manifest.jsonl` | 40 | Train-split prompts for QLoRA (disjoint source IDs) |
+| `train_manifest.jsonl` | 40 | Reserved QLoRA prompts; includes eight public BBH test and eight MMLU validation questions |
 
 Seed: 42.
 

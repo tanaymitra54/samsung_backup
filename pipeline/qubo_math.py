@@ -56,13 +56,13 @@ def exhaustive_solve(
     best_energy = 0.0
     found = False
     for combo in index_sets:
-        state = [0] * n
-        for i in combo:
-            state[i] = 1
-        energy = qubo_energy(Q, state)
+        # Only selected entries contribute. Avoid scanning all n^2 entries
+        # for each of the 8008 six-of-sixteen subsets.
+        energy = sum(float(Q[i][i]) for i in combo)
+        energy += sum(float(Q[i][j]) for pos, i in enumerate(combo) for j in combo[pos + 1:])
         if not found or energy < best_energy:
             best_energy = energy
-            best_state = state
+            best_state = [int(i in combo) for i in range(n)]
             found = True
     return best_state, best_energy
 

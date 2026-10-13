@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import multiprocessing
 import os
 import random
 import sys
@@ -650,7 +651,7 @@ def main():
     if num_gpus > 1:
         print(f"  Multi-GPU job sharding across {num_gpus} GPUs (one model replica per GPU)...")
         futures = []
-        with ProcessPoolExecutor(max_workers=num_gpus) as executor:
+        with ProcessPoolExecutor(max_workers=num_gpus, mp_context=multiprocessing.get_context("spawn")) as executor:
             if len(benchmark_list) > 1:
                 # One (or more) full benchmarks per GPU.
                 for i, b in enumerate(benchmark_list):

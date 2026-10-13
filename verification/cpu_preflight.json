@@ -1,0 +1,16 @@
+{
+  "python": "3.11.15",
+  "torch": "2.5.1+cpu",
+  "cuda_runtime": null,
+  "cuda_available": false,
+  "scope": "CPU API check",
+  "packages": {
+    "transformers": "4.51.3",
+    "trl": "0.19.1",
+    "peft": "0.15.2",
+    "datasets": "3.6.0",
+    "accelerate": "1.7.0",
+    "sentence-transformers": "4.1.0"
+  },
+  "gpus": []
+}

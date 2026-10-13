@@ -1,0 +1,483 @@
+{
+  "checked_at_utc": "2026-10-13T09:04:07.485864+00:00",
+  "scope": "real dataset loading and gold parsing; no model inference",
+  "benchmarks": {
+    "gsm8k": {
+      "roles": {
+        "fit": {
+          "questions": 5947,
+          "topics": {
+            "unlabelled": 5947
+          },
+          "source_splits": {
+            "train": 5947
+          },
+          "answer_types": {
+            "numeric": 5947
+          }
+        },
+        "tune": {
+          "questions": 1526,
+          "topics": {
+            "unlabelled": 1526
+          },
+          "source_splits": {
+            "train": 1526
+          },
+          "answer_types": {
+            "numeric": 1526
+          }
+        },
+        "eval": {
+          "questions": 1319,
+          "topics": {
+            "unlabelled": 1319
+          },
+          "source_splits": {
+            "test": 1319
+          },
+          "answer_types": {
+            "numeric": 1319
+          }
+        }
+      },
+      "intersections": {
+        "fit/tune": 0,
+        "fit/eval": 0,
+        "tune/eval": 0
+      }
+    },
+    "mmlu": {
+      "roles": {
+        "fit": {
+          "questions": 1212,
+          "topics": {
+            "logical_fallacies": 16,
+            "high_school_government_and_politics": 19,
+            "public_relations": 9,
+            "computer_security": 11,
+            "formal_logic": 11,
+            "high_school_computer_science": 6,
+            "security_studies": 26,
+            "virology": 12,
+            "human_sexuality": 11,
+            "high_school_chemistry": 15,
+            "college_medicine": 16,
+            "philosophy": 26,
+            "high_school_world_history": 22,
+            "jurisprudence": 8,
+            "high_school_us_history": 17,
+            "miscellaneous": 64,
+            "business_ethics": 6,
+            "high_school_european_history": 15,
+            "professional_law": 141,
+            "clinical_knowledge": 24,
+            "high_school_statistics": 21,
+            "college_physics": 8,
+            "management": 8,
+            "high_school_geography": 17,
+            "marketing": 20,
+            "high_school_macroeconomics": 37,
+            "abstract_algebra": 9,
+            "moral_disputes": 32,
+            "high_school_mathematics": 24,
+            "professional_medicine": 22,
+            "high_school_biology": 27,
+            "high_school_psychology": 41,
+            "prehistory": 27,
+            "high_school_microeconomics": 20,
+            "conceptual_physics": 21,
+            "world_religions": 15,
+            "human_aging": 21,
+            "professional_psychology": 58,
+            "econometrics": 10,
+            "nutrition": 29,
+            "us_foreign_policy": 8,
+            "astronomy": 12,
+            "high_school_physics": 12,
+            "machine_learning": 11,
+            "college_biology": 15,
+            "international_law": 7,
+            "moral_scenarios": 75,
+            "college_chemistry": 8,
+            "sociology": 15,
+            "college_mathematics": 7,
+            "electrical_engineering": 13,
+            "elementary_mathematics": 32,
+            "global_facts": 8,
+            "professional_accounting": 20,
+            "anatomy": 9,
+            "college_computer_science": 9,
+            "medical_genetics": 9
+          },
+          "source_splits": {
+            "validation": 1212
+          },
+          "answer_types": {
+            "choice": 1212
+          }
+        },
+        "tune": {
+          "questions": 317,
+          "topics": {
+            "moral_disputes": 6,
+            "high_school_government_and_politics": 2,
+            "professional_accounting": 11,
+            "human_aging": 2,
+            "high_school_european_history": 3,
+            "public_relations": 3,
+            "high_school_biology": 5,
+            "human_sexuality": 1,
+            "high_school_us_history": 5,
+            "college_physics": 3,
+            "econometrics": 2,
+            "high_school_mathematics": 5,
+            "high_school_world_history": 4,
+            "security_studies": 1,
+            "jurisprudence": 3,
+            "business_ethics": 5,
+            "high_school_geography": 5,
+            "professional_law": 29,
+            "clinical_knowledge": 5,
+            "world_religions": 4,
+            "conceptual_physics": 5,
+            "marketing": 5,
+            "high_school_macroeconomics": 6,
+            "nutrition": 4,
+            "high_school_microeconomics": 6,
+            "abstract_algebra": 2,
+            "high_school_physics": 5,
+            "professional_medicine": 9,
+            "high_school_computer_science": 3,
+            "management": 3,
+            "virology": 6,
+            "high_school_psychology": 19,
+            "electrical_engineering": 3,
+            "miscellaneous": 22,
+            "international_law": 6,
+            "sociology": 7,
+            "elementary_mathematics": 9,
+            "philosophy": 8,
+            "us_foreign_policy": 3,
+            "astronomy": 4,
+            "high_school_statistics": 2,
+            "medical_genetics": 2,
+            "college_biology": 1,
+            "logical_fallacies": 2,
+            "prehistory": 8,
+            "college_computer_science": 2,
+            "college_medicine": 4,
+            "formal_logic": 3,
+            "global_facts": 2,
+            "high_school_chemistry": 7,
+            "professional_psychology": 11,
+            "anatomy": 5,
+            "college_mathematics": 4,
+            "moral_scenarios": 25
+          },
+          "source_splits": {
+            "validation": 317
+          },
+          "answer_types": {
+            "choice": 317
+          }
+        },
+        "eval": {
+          "questions": 13909,
+          "topics": {
+            "logical_fallacies": 163,
+            "high_school_government_and_politics": 193,
+            "public_relations": 106,
+            "computer_security": 100,
+            "formal_logic": 126,
+            "high_school_computer_science": 100,
+            "security_studies": 245,
+            "virology": 166,
+            "human_sexuality": 131,
+            "high_school_chemistry": 203,
+            "college_medicine": 90,
+            "philosophy": 311,
+            "high_school_world_history": 237,
+            "jurisprudence": 108,
+            "high_school_us_history": 204,
+            "miscellaneous": 782,
+            "business_ethics": 100,
+            "high_school_european_history": 165,
+            "professional_law": 1534,
+            "clinical_knowledge": 256,
+            "high_school_statistics": 216,
+            "college_physics": 85,
+            "management": 103,
+            "high_school_geography": 198,
+            "marketing": 234,
+            "high_school_macroeconomics": 390,
+            "abstract_algebra": 100,
+            "moral_disputes": 346,
+            "high_school_mathematics": 270,
+            "professional_medicine": 272,
+            "high_school_biology": 310,
+            "high_school_psychology": 533,
+            "prehistory": 324,
+            "high_school_microeconomics": 238,
+            "conceptual_physics": 235,
+            "world_religions": 171,
+            "human_aging": 223,
+            "professional_psychology": 607,
+            "econometrics": 114,
+            "nutrition": 306,
+            "us_foreign_policy": 99,
+            "astronomy": 152,
+            "high_school_physics": 151,
+            "machine_learning": 112,
+            "college_biology": 144,
+            "international_law": 121,
+            "moral_scenarios": 895,
+            "college_chemistry": 100,
+            "sociology": 201,
+            "college_mathematics": 100,
+            "electrical_engineering": 145,
+            "elementary_mathematics": 377,
+            "global_facts": 100,
+            "professional_accounting": 282,
+            "anatomy": 135,
+            "college_computer_science": 100,
+            "medical_genetics": 100
+          },
+          "source_splits": {
+            "test": 13909
+          },
+          "answer_types": {
+            "choice": 13909
+          }
+        }
+      },
+      "intersections": {
+        "fit/tune": 0,
+        "fit/eval": 0,
+        "tune/eval": 0
+      }
+    },
+    "bbh": {
+      "roles": {
+        "fit": {
+          "questions": 1298,
+          "topics": {
+            "reasoning_about_colored_objects": 49,
+            "multistep_arithmetic_two": 42,
+            "logical_deduction_seven_objects": 42,
+            "word_sorting": 44,
+            "snarks": 35,
+            "geometric_shapes": 54,
+            "formal_fallacies": 47,
+            "logical_deduction_three_objects": 57,
+            "penguins_in_a_table": 41,
+            "tracking_shuffled_objects_five_objects": 54,
+            "movie_recommendation": 52,
+            "salient_translation_error_detection": 39,
+            "causal_judgement": 31,
+            "object_counting": 48,
+            "tracking_shuffled_objects_three_objects": 50,
+            "navigate": 54,
+            "date_understanding": 54,
+            "ruin_names": 46,
+            "web_of_lies": 57,
+            "dyck_languages": 49,
+            "temporal_sequences": 50,
+            "hyperbaton": 56,
+            "logical_deduction_five_objects": 45,
+            "tracking_shuffled_objects_seven_objects": 50,
+            "boolean_expressions": 57,
+            "disambiguation_qa": 55,
+            "sports_understanding": 40
+          },
+          "source_splits": {
+            "test": 1298
+          },
+          "answer_types": {
+            "choice": 828,
+            "numeric": 90,
+            "text": 141,
+            "boolean": 239
+          }
+        },
+        "tune": {
+          "questions": 1306,
+          "topics": {
+            "reasoning_about_colored_objects": 43,
+            "multistep_arithmetic_two": 50,
+            "logical_deduction_seven_objects": 69,
+            "word_sorting": 36,
+            "snarks": 36,
+            "geometric_shapes": 61,
+            "formal_fallacies": 51,
+            "logical_deduction_three_objects": 57,
+            "penguins_in_a_table": 27,
+            "tracking_shuffled_objects_five_objects": 46,
+            "movie_recommendation": 50,
+            "salient_translation_error_detection": 53,
+            "causal_judgement": 38,
+            "object_counting": 48,
+            "tracking_shuffled_objects_three_objects": 52,
+            "navigate": 49,
+            "date_understanding": 44,
+            "ruin_names": 56,
+            "web_of_lies": 51,
+            "dyck_languages": 43,
+            "temporal_sequences": 41,
+            "hyperbaton": 54,
+            "logical_deduction_five_objects": 46,
+            "tracking_shuffled_objects_seven_objects": 52,
+            "boolean_expressions": 50,
+            "disambiguation_qa": 47,
+            "sports_understanding": 56
+          },
+          "source_splits": {
+            "test": 1306
+          },
+          "answer_types": {
+            "choice": 834,
+            "numeric": 98,
+            "text": 130,
+            "boolean": 244
+          }
+        },
+        "eval": {
+          "questions": 3903,
+          "topics": {
+            "reasoning_about_colored_objects": 158,
+            "multistep_arithmetic_two": 158,
+            "logical_deduction_seven_objects": 139,
+            "word_sorting": 170,
+            "snarks": 107,
+            "geometric_shapes": 135,
+            "formal_fallacies": 152,
+            "logical_deduction_three_objects": 136,
+            "penguins_in_a_table": 78,
+            "tracking_shuffled_objects_five_objects": 150,
+            "movie_recommendation": 148,
+            "salient_translation_error_detection": 158,
+            "causal_judgement": 116,
+            "object_counting": 154,
+            "tracking_shuffled_objects_three_objects": 148,
+            "navigate": 147,
+            "date_understanding": 152,
+            "ruin_names": 148,
+            "web_of_lies": 142,
+            "dyck_languages": 158,
+            "temporal_sequences": 159,
+            "hyperbaton": 140,
+            "logical_deduction_five_objects": 159,
+            "tracking_shuffled_objects_seven_objects": 148,
+            "boolean_expressions": 143,
+            "disambiguation_qa": 148,
+            "sports_understanding": 152
+          },
+          "source_splits": {
+            "test": 3903
+          },
+          "answer_types": {
+            "choice": 2409,
+            "numeric": 312,
+            "text": 482,
+            "boolean": 700
+          }
+        }
+      },
+      "intersections": {
+        "fit/tune": 0,
+        "fit/eval": 0,
+        "tune/eval": 0
+      }
+    },
+    "arc_challenge": {
+      "roles": {
+        "fit": {
+          "questions": 882,
+          "topics": {
+            "unlabelled": 882
+          },
+          "source_splits": {
+            "train": 882
+          },
+          "answer_types": {
+            "choice": 882
+          }
+        },
+        "tune": {
+          "questions": 236,
+          "topics": {
+            "unlabelled": 236
+          },
+          "source_splits": {
+            "train": 236
+          },
+          "answer_types": {
+            "choice": 236
+          }
+        },
+        "eval": {
+          "questions": 1172,
+          "topics": {
+            "unlabelled": 1172
+          },
+          "source_splits": {
+            "test": 1172
+          },
+          "answer_types": {
+            "choice": 1172
+          }
+        }
+      },
+      "intersections": {
+        "fit/tune": 0,
+        "fit/eval": 0,
+        "tune/eval": 0
+      }
+    },
+    "strategyqa": {
+      "roles": {
+        "fit": {
+          "questions": 416,
+          "topics": {
+            "unlabelled": 416
+          },
+          "source_splits": {
+            "train": 416
+          },
+          "answer_types": {
+            "boolean": 416
+          }
+        },
+        "tune": {
+          "questions": 476,
+          "topics": {
+            "unlabelled": 476
+          },
+          "source_splits": {
+            "train": 476
+          },
+          "answer_types": {
+            "boolean": 476
+          }
+        },
+        "eval": {
+          "questions": 1397,
+          "topics": {
+            "unlabelled": 1397
+          },
+          "source_splits": {
+            "train": 1397
+          },
+          "answer_types": {
+            "boolean": 1397
+          }
+        }
+      },
+      "intersections": {
+        "fit/tune": 0,
+        "fit/eval": 0,
+        "tune/eval": 0
+      }
+    }
+  }
+}

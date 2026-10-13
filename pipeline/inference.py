@@ -45,7 +45,7 @@ class InferencePipeline:
         preferred_device = device or self.config.get("evaluation", {}).get("device")
         self.device = resolve_device(preferred_device)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_cfg["name"], cache_dir=model_cfg.get("cache_dir")
+            model_cfg["name"], cache_dir=model_cfg.get("cache_dir"), revision=model_cfg.get("revision")
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -76,11 +76,12 @@ class InferencePipeline:
         self.fallback_max_new_tokens = min(pipe_cfg.get("fallback_max_new_tokens", 128), self.max_new_tokens)
         self.fallback_max_input_tokens = pipe_cfg.get("fallback_max_input_tokens", 1024)
         embedder_device = self.config.get("qubo", {}).get("embedder_device") or str(self.device)
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device)
+        self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device=embedder_device, cache_folder=model_cfg.get("cache_dir"))
 
     def _build_model_kwargs(self, model_cfg: dict, load_in_4bit: bool) -> dict:
         model_kwargs = {
             "cache_dir": model_cfg.get("cache_dir"),
+            "revision": model_cfg.get("revision"),
             "low_cpu_mem_usage": True,
         }
         if self.device.type == "cuda":
@@ -111,12 +112,13 @@ class InferencePipeline:
 
     def _load_model_with_fallbacks(self, model_cfg: dict, load_in_4bit: bool):
         candidate_devices = [self.device]
-        if self.device.type == "cuda":
+        if self.device.type == "cuda" and model_cfg.get("allow_device_fallback", True):
             candidate_devices = candidate_cuda_devices(str(self.device))
 
         attempted = []
         for candidate in candidate_devices:
-            for quantized in ([load_in_4bit] if load_in_4bit else [False, True]):
+            quantizations = [load_in_4bit] if load_in_4bit or not model_cfg.get("allow_quantization_fallback", True) else [False, True]
+            for quantized in quantizations:
                 self.device = candidate
                 attempted.append(f"{candidate}|4bit={quantized}")
                 try:

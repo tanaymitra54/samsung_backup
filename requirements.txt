@@ -1,18 +1,22 @@
-# Use CUDA 12.1 wheels (compatible with driver 535 / CUDA 12.2). Do NOT pip install torch from PyPI alone.
---extra-index-url https://download.pytorch.org/whl/cu121
+# Python 3.11 reference stack. Install CUDA PyTorch separately with setup_venv.sh.
+# torch==2.5.1 also accepts the CUDA wheel's +cu121 local version suffix.
 torch==2.5.1
-transformers>=4.40.0
-datasets>=2.14.0
-accelerate>=0.25.0
-sentence-transformers>=2.2.0
-scikit-learn>=1.3.0
-pyqubo>=1.2.0
-dimod>=0.12.0
-pyyaml>=6.0
-numpy>=1.24.0
-tqdm>=4.65.0
-evaluate>=0.4.0
-bitsandbytes>=0.43.0
-peft>=0.8.0
-trl>=0.8.0
-wandb>=0.16.0
+transformers==4.51.3
+datasets==3.6.0
+accelerate==1.7.0
+sentence-transformers==4.1.0
+scikit-learn==1.6.1
+pyqubo==1.5.0
+dimod==0.12.20
+pyyaml==6.0.2
+numpy==1.26.4
+pyarrow==20.0.0
+pandas==2.2.3
+huggingface-hub==0.36.0
+tqdm==4.67.1
+evaluate==0.4.3
+bitsandbytes==0.45.5
+peft==0.15.2
+trl==0.19.1
+wandb==0.19.11
+pytest==8.3.5

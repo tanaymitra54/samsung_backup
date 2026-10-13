@@ -120,9 +120,10 @@ class ReasonVerifier:
         self.device = resolve_device(preferred_device)
         self.nli_model = AutoModelForSequenceClassification.from_pretrained(
             verifier_cfg["nli_model"],
+            cache_dir=self.config.get("model", {}).get("cache_dir"),
         )
         self.nli_model = self.nli_model.to(self.device)
-        self.nli_tokenizer = AutoTokenizer.from_pretrained(verifier_cfg["nli_model"])
+        self.nli_tokenizer = AutoTokenizer.from_pretrained(verifier_cfg["nli_model"], cache_dir=self.config.get("model", {}).get("cache_dir"))
         self.nli_model.eval()
         self.entailment_index = self._entailment_index()
 

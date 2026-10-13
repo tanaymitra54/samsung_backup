@@ -16,7 +16,7 @@ def resolve_device(preferred: str | None = None) -> torch.device:
             return device
         index = device.index or 0
         if index < 0 or index >= count:
-            index = 0
+            raise ValueError(f"Requested cuda:{index}, but only {count} logical GPUs are visible")
         return torch.device(f"cuda:{index}")
     return torch.device("cuda:0")
 
@@ -49,8 +49,16 @@ def list_visible_gpu_ids() -> list[int]:
 
 
 def mask_worker_gpu(gpu_id: int) -> str:
-    """Restrict the current process to one physical GPU; return remapped device string."""
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    """Map a logical worker GPU through the scheduler's allocation, before CUDA initialization."""
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None:
+        entries = visible.split(",") if visible.strip() else []
+        if gpu_id < 0 or gpu_id >= len(entries):
+            raise ValueError(f"Logical GPU {gpu_id} is outside CUDA_VISIBLE_DEVICES={visible}")
+        token = entries[gpu_id].strip()
+    else:
+        token = str(gpu_id)
+    os.environ["CUDA_VISIBLE_DEVICES"] = token
     return "cuda:0"
 
 

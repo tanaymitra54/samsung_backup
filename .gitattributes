@@ -1,0 +1,7 @@
+*.sh text eol=lf
+*.sbatch text eol=lf
+Dockerfile text eol=lf
+*.py text
+*.yaml text
+*.yml text
+*.md text
