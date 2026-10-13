@@ -3,6 +3,10 @@
 The maintained A6000 setup and execution instructions are in
 [docs/cluster/README.md](docs/cluster/README.md).
 
+The original detailed runbook (host/venv setup, day-to-day commands, Docker
+GPU-env protection, config reference, sampling details, troubleshooting) is
+preserved at [docs/team_runbook_full.md](docs/team_runbook_full.md).
+
 Use `scripts/run_diagnostics.py` for the mentor-requested comparison. It runs
 fit-pool collection, tune-pool collection, learned coefficient calibration,
 and repeated-seed evaluation for each selected dataset. Its dataset runners

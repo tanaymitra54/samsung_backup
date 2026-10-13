@@ -4,6 +4,8 @@ Compare QUBO selection against CoT and Greedy using the **same 16 generated reas
 
 Start with the [A6000 cluster guide](docs/cluster/README.md). It covers installation, GPU allocation, calibration, evaluation, Slurm, resuming, DPO and troubleshooting. The [diagnostic protocol](docs/diagnostic_evaluation.md) explains grading/statistics; the [mentor audit](docs/mentor_audit.md) records the previous implementation's issues and historical question counts.
 
+> Looking for the original end-to-end pipeline documentation (architecture, QUBO math, sampling/verifier/solver modules, benchmark design)? See [docs/pipeline_overview.md](docs/pipeline_overview.md).
+
 ## What is compared
 
 | Method | Shared candidate pool | Selection / final answer |
