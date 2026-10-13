@@ -10,6 +10,7 @@ How to set up, protect, and run the full stack on **NVIDIA RTX A6000 (80 GB)** w
 | Fast / smaller eval | `config/config_fast.yaml` |
 | Default question budget | **~200 per benchmark** (~1000 total); see **§8** |
 | Architecture panels | **40 eval + 40 train** (`data/budget40/`) |
+| QUBO cardinality `k` | `pipeline.subset_size` (**6**) — rationales kept for the final prompt. NOT the question count — **§8** |
 | Stratified sampling? | **No** on main loader (prefix subsets); budget-40 is balanced panels only — **§8.3** |
 | Precision | `bfloat16` (see `hardware.dtype`) |
 | Parallelism | One full model replica **per GPU** (`CUDA_VISIBLE_DEVICES` job sharding) |
@@ -30,6 +31,12 @@ Query → SLM samples 16 traces → majority answer + QUBO diversity → final p
 | Architecture loop | `scripts/run_architecture_pipeline.py` | Matched budget → QLoRA → re-eval |
 | Budget panel data | `scripts/curate_budget40.py` | Builds `data/budget40/*.jsonl` |
 | Model download | `scripts/download_models.py` | Prefetch HF weights into `cache/models` |
+| SFT/CPT data | `scripts/generate_training_data.py` | QUBO-curated training-set generator |
+| SFT data prep | `scripts/prepare_training_data.py` | Stratified training data for fine-tuning |
+| DPO pairs | `scripts/generate_preference_pairs.py` | Gold-verified correct vs incorrect chains |
+| QUBO tuning | `scripts/tune_qubo_params.py` | QUBO hyperparameter grid search |
+| Local accuracy | `scripts/evaluate_accuracy.py` | Quick single-machine accuracy harness |
+| Comparison | `scripts/generate_comparison.py` | Method comparison → CSV |
 
 Helper wrappers (recommended):
 
@@ -209,11 +216,42 @@ Outputs under `outputs/architecture_40q/`:
 
 ### 5.4 Training-only / data utilities
 
+| Script | Role |
+|--------|------|
+| `scripts/generate_training_data.py` | QUBO-curated SFT/CPT training-set generator |
+| `scripts/prepare_training_data.py` | Prepare SFT data with **stratified** sampling |
+| `scripts/generate_preference_pairs.py` | Build DPO pairs (gold-verified correct vs incorrect chain) |
+| `training/sft.py` | LoRA / QLoRA SFT |
+| `training/run_dpo.py` | DPO — run only after preference pairs exist |
+| `scripts/tune_qubo_params.py` | QUBO hyperparameter grid search |
+| `scripts/evaluate_accuracy.py` | Quick local accuracy harness |
+| `scripts/generate_comparison.py` | Method comparison (greedy/CoT/SC/Best/QUBO) → CSV |
+
 ```bash
 python3 scripts/generate_training_data.py --help
+python3 scripts/prepare_training_data.py --help
 python3 training/sft.py --help
+python3 scripts/generate_preference_pairs.py --help
 python3 training/run_dpo.py --config config/config.yaml   # after preference pairs exist
 python3 scripts/tune_qubo_params.py --help
+python3 scripts/evaluate_accuracy.py --help
+```
+
+### 5.5 Environment-variable overrides
+
+Every wrapper reads these from the environment, so you can retarget a run
+without editing any file:
+
+| Var | Wrapper(s) | Default |
+|-----|------------|---------|
+| `CONFIG` | smoke / benchmarks / architecture | `config/config.yaml` |
+| `OUT` | smoke / benchmarks | `outputs/smoke` / `outputs/bench_a6000` |
+| `SEED` | smoke / benchmarks / architecture | `42` |
+| `SUBSET` | benchmarks | `200` |
+| `ROUNDS` | architecture | `1` |
+
+```bash
+SUBSET=50 CONFIG=config/config_fast.yaml OUT=outputs/quick bash scripts/run_benchmarks.sh
 ```
 
 ---
@@ -256,17 +294,25 @@ docker compose -f docker/docker-compose.yml run --rm prism \
 
 ### 6.4 What the compose file protects
 
-| Mount / setting | Purpose |
-|-----------------|---------|
-| Project bind | Code + configs |
-| `./cache` → `/workspace/cache` | Models / HF cache persist on host |
-| `./outputs` → `/workspace/outputs` | Results persist |
-| `./checkpoints` | Adapters persist |
-| `deploy.resources.reservations.devices` | NVIDIA GPUs |
-| `IPC_LOCK` / `shm_size` | Stable DataLoader / CUDA IPC |
-| `.env` | Tokens not baked into image |
+| Mount / setting | Value in `docker/docker-compose.yml` | Purpose |
+|-----------------|--------------------------------------|---------|
+| Project bind | `..:/workspace` (read-write) | Code + configs |
+| `./cache` → `/workspace/cache` | volume | Models / HF cache persist on host |
+| `./outputs` → `/workspace/outputs` | volume | Results persist |
+| `./checkpoints` | volume | Adapters persist |
+| GPU access | `gpus: all` | All visible GPUs exposed to the container |
+| CUDA IPC / DataLoader | `ipc: host`, `shm_size: "16gb"` | Stable shared memory / multi-worker loaders |
+| Locked memory | `ulimits.memlock: -1` | Large pinned-memory allocations |
+| Secrets | `.env` (`HF_TOKEN`, `WANDB_API_KEY`) | Tokens never baked into the image |
 
-Edit `docker/docker-compose.yml` `device_ids: ['0','1']` to match the cards your team owns.
+Which host GPUs the container sees is controlled by `CUDA_VISIBLE_DEVICES` in
+`.env` (compose default is `0`). There is **no** `device_ids` key — GPU
+visibility is env-driven on purpose so the same compose file ports across
+machines. To use two cards: `CUDA_VISIBLE_DEVICES=0,1` in `.env`, then re-run.
+
+The source bind is read-write (so `outputs/`, `checkpoints/`, `cache/` write
+through to the host). If your team wants stricter isolation, mount the code
+read-only and volume-mount only the three writable dirs.
 
 ### 6.5 Offline / air-gapped tip
 
@@ -295,23 +341,58 @@ hardware:
 model:
   name: "Qwen/Qwen2.5-3B-Instruct"
   load_in_4bit: false
+  attn_implementation: "sdpa"
 
-evaluation:
+pipeline:            # QUBO sampling
+  num_answers: 4     # ┐ 4 × 4 = 16 traces/question (see §8.1b)
+  num_reasons: 4     # ┘
+  subset_size: 6     # QUBO cardinality k — rationales kept for the final prompt
+
+qubo:
+  similarity_metric: "cosine"
+  penalty_weight: 2.0
+  diversity_bonus: 0.5
+
+solver:
+  method: "auto"     # simulated annealing only (OpenJij removed)
+  sa:
+    iterations: 500
+
+evaluation:          # benchmark harness
+  benchmarks: [gsm8k, bbh, strategyqa, arc_challenge, mmlu]
   batch_size: 16
-  subset_size: 200
+  subset_size: 200   # questions PER benchmark — NOT pipeline.subset_size (see warning)
+  full_eval: false
+  score_with_gold: false
+  report_ci: true
+  use_batched_inference: true
 
 training:
   batch_size: 16
   qlora: true
+  sft_epochs: 3
+  lora_rank: 16
 ```
 
-Use `config/config_fast.yaml` for smaller `subset_size` during iteration.
+> **⚠ Two `subset_size` keys, opposite meanings.** `evaluation.subset_size` (**200**) =
+> number of *questions* per benchmark. `pipeline.subset_size` (**6**) = QUBO
+> cardinality *k* — how many rationales feed the final prompt. Confusing them is
+> the most common setup mistake. Full detail in **§8**.
+
+Use `config/config_fast.yaml` to iterate fast: it lowers `evaluation.subset_size`
+to **50** (the QUBO `pipeline.subset_size: 6` is identical in both).
 
 ---
 
 ## 8) How many questions run? Sampling details
 
 Controlled by `evaluation.subset_size` / `evaluation.full_eval` in config, or CLI `--subset-size` / `--full`. Loader code: `evaluation/__init__.py` (`BenchmarkRunner`). Architecture panels: `scripts/curate_budget40.py` + `data/budget40/`.
+
+> **Two different `subset_size` keys — do not confuse them:**
+> - `evaluation.subset_size` (**200**) = number of **questions** per benchmark. Set via `--subset-size` / `--full`.
+> - `pipeline.subset_size` (**6**) = QUBO cardinality **k** — rationales kept into the final prompt. NOT the question count.
+>
+> Also note `pipeline.subset_size: 6` is the same in both `config.yaml` and `config_fast.yaml`; only `evaluation.subset_size` differs (200 vs 50).
 
 ### 8.1 Default remote / A6000 benchmark run
 
@@ -390,6 +471,11 @@ Seed **42**. Regenerate with `python3 scripts/curate_budget40.py`.
 - MMLU: try **≥1 question per STEM subject**, then fill.
 - BBH: tasks shuffled, then samples taken with disjoint IDs.
 - GSM8K / ARC / StrategyQA: random disjoint picks from pools after shuffle — **balanced across the five benchmarks (8 each)**, not stratified within each dataset’s full label space.
+
+**Training-data prep (`scripts/prepare_training_data.py`): does stratify.** Unlike the
+eval loader, this utility *does* apply stratified sampling when building the
+fine-tuning set — a deliberate contrast, so don't assume "the pipeline never
+stratifies." The statement above is about the **evaluation** path only.
 
 ### 8.4 Quick mental model
 
