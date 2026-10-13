@@ -8,8 +8,12 @@ How to set up, protect, and run the full stack on **NVIDIA RTX A6000 (80 GB)** w
 | Default model | `Qwen/Qwen2.5-3B-Instruct` |
 | Config | `config/config.yaml` |
 | Fast / smaller eval | `config/config_fast.yaml` |
+| Default question budget | **~200 per benchmark** (~1000 total); see **§8** |
+| Architecture panels | **40 eval + 40 train** (`data/budget40/`) |
+| Stratified sampling? | **No** on main loader (prefix subsets); budget-40 is balanced panels only — **§8.3** |
 | Precision | `bfloat16` (see `hardware.dtype`) |
 | Parallelism | One full model replica **per GPU** (`CUDA_VISIBLE_DEVICES` job sharding) |
+| QUBO solver | **Simulated annealing** only (CPU/GPU SA). OpenJij removed. |
 
 ---
 
@@ -305,7 +309,100 @@ Use `config/config_fast.yaml` for smaller `subset_size` during iteration.
 
 ---
 
-## 8) Outputs & logging
+## 8) How many questions run? Sampling details
+
+Controlled by `evaluation.subset_size` / `evaluation.full_eval` in config, or CLI `--subset-size` / `--full`. Loader code: `evaluation/__init__.py` (`BenchmarkRunner`). Architecture panels: `scripts/curate_budget40.py` + `data/budget40/`.
+
+### 8.1 Default remote / A6000 benchmark run
+
+With **`config/config.yaml`** (`subset_size: 200`, `full_eval: false`) and all 5 benchmarks:
+
+| Benchmark | Questions (approx.) | How the subset is taken |
+|-----------|--------------------:|-------------------------|
+| GSM8K | **200** | First 200 of HF `openai/gsm8k` **test** (`dataset.select(range(...))`) |
+| ARC-Challenge | **200** | First 200 of `allenai/ai2_arc` ARC-Challenge **test** |
+| StrategyQA | **200** | First 200 rows from `voidful/StrategyQA` (train stream / list) |
+| MMLU | **~200** | `subset_size // 5` ≈ **40 per STEM subject** (first 40 of each subject’s test) |
+| BBH | **~200** | `subset_size // ~27` tasks ≈ **7–8 per BBH task** (first N of each task) |
+
+**Total ≈ 1,000 questions** per full default `run_all_benchmarks` / `run_benchmarks.sh` pass (5 × 200).
+
+Other presets:
+
+| Mode | Config / flag | Approx. total |
+|------|---------------|---------------|
+| Fast iteration | `config/config_fast.yaml` → `subset_size: 50` | ~250 (5 × 50) |
+| Smoke | `bash scripts/run_smoke.sh` → GSM8K × 3 | **3** |
+| Custom | `--subset-size N` | N per benchmark (BBH/MMLU still split across tasks/subjects) |
+| Full datasets | `--full` or `full_eval: true` | Full HF sizes (e.g. GSM8K ~1,319; ARC ~1,172; BBH/MMLU much larger) |
+
+Per **question**, the QUBO path still draws **16 traces** (`num_answers: 4` × `num_reasons: 4`), independent of how many questions you evaluate.
+
+### 8.1b Matched budget: who shares the 16 traces?
+
+**Greedy and CoT do *not* use the 16 traces.** They are separate single-shot baselines (one `generate` each, different prompts). They only **share the loaded model weights** with the sampler (same GPU replica), not the sample pool.
+
+What **does** share one pool of 16 traces per question (“matched budget”):
+
+| Method | Uses the 16 traces? | How |
+|--------|---------------------|-----|
+| **Greedy** | No | One direct-answer generate |
+| **CoT** | No | One “think step by step” generate |
+| **SC-16** | Yes | Majority vote over answers from the same 16 samples |
+| **Best-16** | Yes | Pick best sample (by verifier score) from those 16 |
+| **QUBO** | Yes | QUBO select diverse rationales **inside** the majority-answer group from those 16, then final prompt → answer |
+
+Flow in `scripts/run_all_benchmarks.py` / architecture eval:
+
+```
+per question:
+  1) baseline_greedy(inference, q)     # independent
+  2) baseline_cot(inference, q)        # independent
+  3) run_matched_budget(...):
+        samples = sampler.sample(...)  # 16 traces once
+        → SC-16, Best-16, QUBO all from that same pool
+```
+
+So comparisons of SC / Best / QUBO are fair on the **same** 16; Greedy/CoT are cheaper single-call baselines, not members of that matched set.
+
+### 8.2 Architecture / QLoRA path (budget-40)
+
+Not driven by `subset_size`. Fixed panels under `data/budget40/`:
+
+| Manifest | Size | Role |
+|----------|-----:|------|
+| `eval_manifest.jsonl` | **40** | Held-out graded eval (8 × 5 benchmarks) |
+| `train_manifest.jsonl` | **40** | Disjoint train prompts for QLoRA (8 × 5) |
+
+Seed **42**. Regenerate with `python3 scripts/curate_budget40.py`.
+
+### 8.3 Are we using stratified sampling?
+
+**Main benchmark loader (`BenchmarkRunner`): no — not stratified random sampling.**
+
+- GSM8K, ARC, StrategyQA: **prefix / head** of the split (deterministic first N). No shuffle by seed inside the loader; no stratification by difficulty, topic, or answer class.
+- BBH / MMLU: only a **weak quota by task or subject** (equal chunk of `subset_size`), still the **first N inside each slice** — not stratified random draws.
+- So default “200 per benchmark” is a **convenience prefix subset**, not a statistically stratified sample of the full test set. Treat accuracy CIs accordingly; for claims, prefer larger N or `--full`.
+
+**Budget-40 curator (`curate_budget40.py`): closer to balanced panel design, still not classic stratified sampling.**
+
+- Seeded shuffle (`seed=42`) + **disjoint** train/eval `source_id`s.
+- MMLU: try **≥1 question per STEM subject**, then fill.
+- BBH: tasks shuffled, then samples taken with disjoint IDs.
+- GSM8K / ARC / StrategyQA: random disjoint picks from pools after shuffle — **balanced across the five benchmarks (8 each)**, not stratified within each dataset’s full label space.
+
+### 8.4 Quick mental model
+
+```
+run_benchmarks.sh  →  ~200 Q × 5 benches  →  ~1000 Q  (prefix subsets; not stratified)
+run_smoke.sh       →  3 GSM8K
+run_architecture   →  40 eval + 40 train   (fixed budget-40 panels)
+--full             →  entire HF test (or equivalent) sets
+```
+
+---
+
+## 9) Outputs & logging
 
 | Path | Contents |
 |------|----------|
@@ -325,7 +422,7 @@ python3 scripts/run_all_benchmarks.py --wandb-project prism-a6000 --subset-size 
 
 ---
 
-## 9) Troubleshooting
+## 10) Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
@@ -338,7 +435,7 @@ python3 scripts/run_all_benchmarks.py --wandb-project prism-a6000 --subset-size 
 
 ---
 
-## 10) Suggested team checklist
+## 11) Suggested team checklist
 
 1. [ ] Driver OK: `nvidia-smi` shows A6000(s) with free memory  
 2. [ ] `bash scripts/setup_venv.sh` **or** `docker compose ... build`  
@@ -346,12 +443,13 @@ python3 scripts/run_all_benchmarks.py --wandb-project prism-a6000 --subset-size 
 4. [ ] `bash scripts/run_smoke.sh` (3 GSM8K questions)  
 5. [ ] Agree which GPU IDs the team owns → set `CUDA_VISIBLE_DEVICES` / compose `device_ids`  
 6. [ ] Prefetch models into `cache/`  
-7. [ ] Run benchmarks / architecture with a fixed `--seed`  
-8. [ ] Archive `outputs/*` + config snapshot for the report  
+7. [ ] Confirm question budget (§8): default ~200/bench (~1000 total); architecture = 40+40; note **not** stratified for main loader  
+8. [ ] Run benchmarks / architecture with a fixed `--seed`  
+9. [ ] Archive `outputs/*` + config snapshot for the report  
 
 ---
 
-## 11) One-liner cheat sheet
+## 12) One-liner cheat sheet
 
 ```bash
 cd samsung_backup && source .venv/bin/activate

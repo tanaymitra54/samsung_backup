@@ -358,7 +358,7 @@ def run_one_query(
 
 
 def check_flow() -> None:
-    """Runnable check: QUBO + quantum solver + select + final prompt. No SLM load."""
+    """Runnable check: QUBO + simulated annealing + select + final prompt. No SLM load."""
     Q = np.array(
         [
             [-1.0, 0.8, 0.1],

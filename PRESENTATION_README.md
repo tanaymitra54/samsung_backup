@@ -144,7 +144,7 @@ For our PRISM comparison roadmap, the most relevant common benchmarks are GSM8K 
 - Not just vote-based aggregation: uses optimization-backed subset selection.
 - Not only large-model focused: explicitly engineered for smaller 3B-class models.
 - Adds correctness signal directly into objective (key novelty).
-- Targets deployable path now (CPU/A100), with future one-switch migration to quantum backend.
+- Targets deployable path now (CPU/A6000): QUBO solved with simulated annealing (GPU SA when CUDA is available).
 
 ## 8) Future integration plan
 - Integrate full multi-benchmark runner (GSM8K, BBH, StrategyQA, ARC, MMLU)

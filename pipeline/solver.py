@@ -193,61 +193,6 @@ class SimulatedAnnealingSolver:
         return states[best_idx].cpu().numpy().astype(int), energies[best_idx].item()
 
 
-def qubo_matrix_to_dict(Q: np.ndarray) -> dict:
-    n = Q.shape[0]
-    qubo = {}
-    for i in range(n):
-        if Q[i, i] != 0:
-            qubo[(i, i)] = float(Q[i, i])
-        for j in range(i + 1, n):
-            coef = float(Q[i, j] + Q[j, i])
-            if coef != 0:
-                qubo[(i, j)] = coef
-    return qubo
-
-
-# ponytail: OpenJij SQA is a quantum-inspired simulator, not a QPU. Point sample_qubo at D-Wave/IBM if you get hardware access.
-class QuantumSolver:
-    """QUBO solver used by the diagram's 'QUBO mapping + Quantum solver' step.
-
-    Default backend is OpenJij simulated quantum annealing (SQA). Falls back to
-    SimulatedAnnealingSolver if OpenJij is missing or fails.
-    """
-
-    def __init__(self, config_path: str = "config/config.yaml", device: str | None = None):
-        with open(config_path) as f:
-            self.config = yaml.safe_load(f)
-
-        q_cfg = self.config.get("solver", {}).get("quantum", {})
-        self.backend = q_cfg.get("backend", "openjij_sqa")
-        self.num_reads = q_cfg.get("num_reads", 100)
-        self.trotter = q_cfg.get("trotter", 8)
-        self.timeout_s = q_cfg.get("timeout_s", 30)
-        self._fallback = SimulatedAnnealingSolver(config_path, device=device)
-        self.device = self._fallback.device
-
-    def _openjij_sample(self, qubo: dict):
-        import openjij as oj
-
-        sampler = oj.SQASampler()
-        try:
-            return sampler.sample_qubo(
-                qubo, num_reads=self.num_reads, trotter=self.trotter
-            )
-        except TypeError:
-            return sampler.sample_qubo(qubo, num_reads=self.num_reads)
-
-    def _fallback_cpu(self, Q: np.ndarray) -> tuple[np.ndarray, float]:
-        """Fast CPU SA for small Q when OpenJij hangs (common under PyTorch+OpenMP)."""
-        return self._fallback._solve_cpu(Q)
-
-    def solve(self, Q: np.ndarray, k: int | None = None) -> tuple[np.ndarray, float]:
-        # n<=20 is exhaustive inside the fallback. OpenJij is not a ground-truth
-        # optimiser and is not used for the proof-of-concept size.
-        if Q.size == 0:
-            return np.array([], dtype=int), 0.0
-        return self._fallback.solve(Q, k=k)
-
-
 def make_solver(config_path: str = "config/config.yaml", device: str | None = None):
+    """Return the production QUBO solver: CPU/GPU simulated annealing."""
     return SimulatedAnnealingSolver(config_path, device=device)

@@ -26,7 +26,7 @@ def __getattr__(name: str):
         from .qubo_builder import QUBOBuilder
 
         return QUBOBuilder
-    if name in ("SimulatedAnnealingSolver", "QuantumSolver", "make_solver"):
+    if name in ("SimulatedAnnealingSolver", "make_solver"):
         from . import solver
 
         return getattr(solver, name)
