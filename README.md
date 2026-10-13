@@ -2,6 +2,9 @@
 
 > A modular reasoning framework that generates diverse chains-of-thought, scores them, encodes selection as a QUBO optimization problem, and composes final answers using selected high-value reasoning traces.
 
+> **Starting a run?** Read the operational runbook first: **[`run_script.md`](run_script.md)** — A6000 setup, multi-GPU sharding, Docker, and day-to-day commands.
+> **Running a research benchmark?** §8 of the runbook pins the exact question budget and the two distinct `subset_size` keys.
+
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?logo=pytorch&logoColor=white)
 ![Transformers](https://img.shields.io/badge/HuggingFace-Transformers-FFD21E?logo=huggingface&logoColor=black)
@@ -50,6 +53,17 @@ We use **Simulated Annealing** to solve the QUBO — it's inspired by how metals
 - Treats reasoning-trace selection as an explicit combinatorial optimization
 - Integrates lightweight verifier scores and semantic similarity penalties into a unified QUBO matrix
 - Supports benchmark-oriented evaluation (GSM8K, BBH, StrategyQA, ARC-Challenge, MMLU)
+
+### At a glance
+
+| | |
+|---|---|
+| **Optimizer** | QUBO solved by **Simulated Annealing only** (CPU or GPU parallel reads). OpenJij was removed. |
+| **Default model** | `Qwen/Qwen2.5-3B-Instruct` (bf16, single GPU replica per worker) |
+| **Traces / question** | 16 (`num_answers: 4` × `num_reasons: 4`) |
+| **Benchmarks** | GSM8K · BBH · StrategyQA · ARC-Challenge · MMLU |
+| **Hardware** | NVIDIA RTX A6000 80 GB (multi-GPU job sharding supported) |
+| **Runbook** | [`run_script.md`](run_script.md) |
 
 ---
 
@@ -299,7 +313,7 @@ stateDiagram-v2
 **In short:** Grade each answer. Math answers get checked for arithmetic consistency; commonsense answers get checked via NLI.
 
 - **Math mode:** Extracts numbers and operations via regex `(\d+\.?\d*)\s*([+\-*/])\s*(\d+\.?\d*)`, computes results, checks if consecutive computations agree
-- **Commonsense mode:** Uses `cross-encoder/nli-distilroberta-base` to measure if the reason entails the answer
+- **Commonsense mode:** Uses `cross-encoder/nli-deberta-v3-base` to measure if the reason entails the answer
 - **Tradeoff:** heuristics are fast but not as accurate as symbolic proof checking
 
 ### `pipeline/qubo_builder.py` - QUBOBuilder
@@ -316,6 +330,7 @@ stateDiagram-v2
 
 - **Method:** Start with random selection, flip one bit at a time, accept better combinations, sometimes accept worse ones (to escape local minima)
 - **Config:** 2 independent runs × 500 iterations each, temperature 100→0.01
+- **GPU path:** when `solver.gpu.enabled`, SA runs many parallel reads (1024) with optional parallel tempering; otherwise CPU SA
 - **Tradeoff:** no guarantee of optimal solution, but fast and CPU-friendly
 
 ### `pipeline/inference.py` - InferencePipeline
@@ -412,29 +427,61 @@ quadrantChart
 ```text
 .
 ├── config/
-│   └── config.yaml
-├── evaluation/
-│   ├── __init__.py
+│   ├── config.yaml                 # main config (A6000, evaluation.subset_size=200)
+│   ├── config_fast.yaml            # fast iteration (evaluation.subset_size=50)
+│   └── best_qubo_params.yaml       # tuned QUBO hyperparameters
+├── pipeline/                       # core reasoning + QUBO stack
+│   ├── sampling.py                 # DiverseSampler
+│   ├── verifier.py                 # ReasonVerifier (math + NLI)
+│   ├── reasoning.py
+│   ├── answer_groups.py            # majority / confidence-weighted grouping
+│   ├── selection.py                # method selection helpers
+│   ├── matched_baselines.py        # greedy / CoT / SC-16 / Best-16 on one trace pool
+│   ├── qubo_builder.py             # QUBO matrix construction
+│   ├── qubo_math.py
+│   ├── hyperparam_qubo.py          # QUBO hyperparameter helpers
+│   ├── solver.py                   # simulated annealing (CPU/GPU)
+│   ├── inference.py                # final prompt + generation
+│   ├── orchestrator.py             # end-to-end run + matched-budget flow
+│   ├── budget_table.py             # budget-40 comparison tables
+│   ├── device_utils.py             # GPU enumeration / masking
+│   ├── preference_labels.py        # DPO label construction
+│   └── stats_utils.py              # confidence intervals / aggregation
+├── evaluation/                     # benchmark harness
+│   ├── __init__.py                 # BenchmarkRunner (5 benchmarks)
 │   ├── answer_utils.py
 │   └── run_gsm8k_comparison.py
-├── pipeline/
-│   ├── __init__.py
-│   ├── sampling.py
-│   ├── verifier.py
-│   ├── qubo_builder.py
-│   ├── solver.py
-│   ├── inference.py
-│   └── hyperparam_qubo.py
-├── scripts/
-│   ├── generate_comparison.py        # 7 selection methods comparison
-│   ├── evaluate_accuracy.py          # Sanity check on 6 questions
-│   └── run_all_benchmarks.py         # Run all 5 benchmarks → CSV/JSON/MD
+├── scripts/                        # entry points + shell wrappers
+│   ├── run_all_benchmarks.py       # greedy / CoT / SC-16 / Best-16 / QUBO
+│   ├── run_architecture_pipeline.py# matched budget → QLoRA → re-eval
+│   ├── curate_budget40.py          # build data/budget40/*.jsonl
+│   ├── download_models.py          # prefetch HF weights
+│   ├── generate_training_data.py   # QUBO-curated SFT/CPT data
+│   ├── prepare_training_data.py    # stratified SFT data prep
+│   ├── generate_preference_pairs.py# DPO pairs
+│   ├── tune_qubo_params.py         # QUBO grid search
+│   ├── evaluate_accuracy.py        # local accuracy harness
+│   ├── generate_comparison.py      # method comparison → CSV
+│   ├── setup_venv.sh               # venv + deps
+│   ├── env_check.sh                # GPU / CUDA / disk sanity check
+│   ├── run_smoke.sh                # 3-question smoke test
+│   ├── run_benchmarks.sh           # full / subset benchmark run
+│   └── run_architecture.sh         # architecture + QLoRA loop
 ├── training/
-│   └── sft.py                        # SFT stub (needs A100 GPU)
-├── outputs/                          # Benchmark results
-├── cache/models/                     # Cached model weights
+│   ├── sft.py                      # LoRA / QLoRA SFT
+│   ├── run_dpo.py                  # DPO training
+│   └── progress_ui.py              # live GPU progress
+├── docker/                         # isolated GPU container
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── env.example
+├── data/budget40/                  # fixed 40 eval + 40 train panels
+├── tests/test_protocol.py
+├── outputs/                        # results (gitignored)
+├── cache/models/                   # model weights (gitignored)
+├── checkpoints/                    # adapters (gitignored)
 ├── requirements.txt
-├── IMPLEMENTATION_ROADMAP.md
+├── run_script.md                   # operational runbook (start here)
 └── README.md
 ```
 
@@ -444,53 +491,88 @@ quadrantChart
 
 ### Prerequisites
 - Python 3.10+
-- Optional GPU for faster model inference
-- `pip` or equivalent environment manager
+- NVIDIA GPU with a CUDA 12.x driver for full runs (developed on **RTX A6000 80 GB**; CPU works but is slow)
+- Optional: Docker + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) for the isolated container path
 
-### Quick start
+### Quick start (venv)
 
 ```bash
-git clone <your-repo-url>
-cd Quantum-Annealing-SLM
-python3 -m venv .venv
+git clone https://github.com/tanaymitra54/samsung_backup
+cd samsung_backup
+
+bash scripts/setup_venv.sh          # creates .venv, installs PyTorch cu121 + deps
 source .venv/bin/activate
-pip install -r requirements.txt
+bash scripts/env_check.sh           # GPU / CUDA / paths sanity check
+
+export HF_HOME="$(pwd)/cache/huggingface"
+export TRANSFORMERS_CACHE="$(pwd)/cache/models"
+python3 scripts/download_models.py  # optional: prefetch weights
 ```
 
+### Quick start (Docker)
+
+```bash
+cp docker/env.example .env          # set HF_TOKEN / CUDA_VISIBLE_DEVICES
+docker compose -f docker/docker-compose.yml build
+docker compose -f docker/docker-compose.yml run --rm prism bash scripts/run_smoke.sh
+```
+
+> Full hardware rules, multi-GPU sharding, and troubleshooting live in **[`run_script.md`](run_script.md)**.
+
 ### Configuration
-Edit `config/config.yaml` for model, sampling, solver, and evaluation parameters.
+Edit `config/config.yaml`. **Two `subset_size` keys exist and mean different things — do not confuse them:**
+
+| Key | Meaning |
+|-----|---------|
+| `evaluation.subset_size` | number of **questions** per benchmark (default 200) |
+| `pipeline.subset_size` | QUBO **cardinality k** — rationales kept for the final prompt (default 6) |
+
+Use `config/config_fast.yaml` (`evaluation.subset_size: 50`) for quick iteration.
 
 ---
 
 ## 10) Usage
 
-### Run all 5 benchmarks (recommended)
+> All commands assume `cd samsung_backup && source .venv/bin/activate`. Wrapper scripts are env-overridable (`CONFIG`, `OUT`, `SEED`, `SUBSET`, `ROUNDS`).
+
+### Smoke test (always first)
 
 ```bash
-python3 scripts/run_all_benchmarks.py --subset-size 100
+bash scripts/run_smoke.sh          # 3 GSM8K questions, end-to-end
 ```
 
-Runs GSM8K, BBH, StrategyQA, ARC-Challenge, and MMLU in sequence. Each question is evaluated with greedy, CoT, and QUBO pipeline. Outputs CSV + JSON + Markdown.
-
-### Run just GSM8K comparison
+### Benchmarks (auto multi-GPU when >1 GPU is visible)
 
 ```bash
+bash scripts/run_benchmarks.sh                          # all 5 benchmarks, 200/bench
+SUBSET=100 bash scripts/run_benchmarks.sh               # 100 per benchmark
+python3 scripts/run_all_benchmarks.py --full            # full datasets
+python3 scripts/run_all_benchmarks.py --benchmarks gsm8k --subset-size 50
+python3 scripts/run_all_benchmarks.py --device cuda:1 --no-multi-gpu   # pin one GPU
+```
+
+Each question is evaluated with **greedy, CoT, SC-16, Best-16, and QUBO** (the last three share one pool of 16 traces). Outputs CSV + JSON + Markdown.
+
+### Architecture pipeline (matched budget → QLoRA → re-eval)
+
+```bash
+python3 scripts/curate_budget40.py                      # build the 40+40 panels (once)
+bash scripts/run_architecture.sh                        # full loop
+python3 scripts/run_architecture_pipeline.py --skip-qlora   # eval only
+```
+
+Outputs under `outputs/architecture_40q/` (`budget_table.md`, `per_question.jsonl`, adapters under `checkpoints/`).
+
+### Method & tuning utilities
+
+```bash
+python3 scripts/generate_comparison.py                  # 7-method comparison → CSV
+python3 scripts/evaluate_accuracy.py                    # local accuracy harness
+python3 scripts/tune_qubo_params.py --help              # QUBO hyperparameter grid search
 python3 evaluation/run_gsm8k_comparison.py --subset-size 100
 ```
 
-### Run method comparison (7 selection methods)
-
-```bash
-python3 scripts/generate_comparison.py
-```
-
-### Run accuracy sanity check
-
-```bash
-python3 scripts/evaluate_accuracy.py
-```
-
-### Programmatic benchmark runner
+### Programmatic
 
 ```python
 from evaluation import BenchmarkRunner
