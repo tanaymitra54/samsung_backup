@@ -10,8 +10,20 @@ from datetime import datetime
 
 
 def _mask_single_gpu_from_argv():
+    # Keep all GPUs visible when multi-GPU job sharding is requested or defaulted.
     if "--multi-gpu" in sys.argv:
         return
+    # Explicit --device cuda:N pin (and --no-multi-gpu) → mask to that card.
+    if "--no-multi-gpu" not in sys.argv:
+        # Defer auto multi-GPU until torch is imported; do not mask yet.
+        has_device_pin = False
+        for idx, arg in enumerate(sys.argv):
+            if arg == "--device" and idx + 1 < len(sys.argv):
+                if sys.argv[idx + 1].startswith("cuda:"):
+                    has_device_pin = True
+                break
+        if not has_device_pin:
+            return
 
     for idx, arg in enumerate(sys.argv):
         if arg == "--device" and idx + 1 < len(sys.argv):
@@ -35,7 +47,12 @@ from evaluation.answer_utils import extract_predicted_answer, extract_gsm8k_gold
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.sampling import DiverseSampler
-from pipeline.device_utils import resolve_device
+from pipeline.device_utils import (
+    list_visible_gpu_ids,
+    mask_worker_gpu,
+    resolve_device,
+    shard_indices,
+)
 from pipeline.solver import SimulatedAnnealingSolver, make_solver
 from pipeline.matched_baselines import best_of_n_answer, majority_vote_answers
 from pipeline.orchestrator import run_one_query
@@ -64,9 +81,13 @@ def parse_args():
     parser.add_argument("--use-vllm", action="store_true",
                         help="Use vLLM backend for inference")
     parser.add_argument("--device", type=str, default=None,
-                        help="Single device for benchmark execution (default: evaluation.device or cuda:0)")
+                        help="Pin to one GPU (disables auto multi-GPU), e.g. cuda:1")
     parser.add_argument("--multi-gpu", action="store_true",
-                        help="Distribute benchmarks across available GPUs")
+                        help="Force multi-GPU job sharding across visible GPUs")
+    parser.add_argument("--no-multi-gpu", action="store_true",
+                        help="Force single-GPU mode even when multiple GPUs are visible")
+    parser.add_argument("--config", type=str, default="config/config.yaml",
+                        help="Path to config YAML")
     parser.add_argument("--wandb-project", type=str, default=None,
                         help="Weights & Biases project name for tracking")
     parser.add_argument("--debug", action="store_true",
@@ -327,6 +348,48 @@ def write_summary_markdown(path: str, results: dict, config_benchmarks: list[str
         f.write("\n".join(lines))
 
 
+def _summarize_rows(benchmark_name: str, results_rows: list[dict]) -> dict:
+    correct_greedy = sum(int(r.get("correct_greedy", 0)) for r in results_rows)
+    correct_cot = sum(int(r.get("correct_cot", 0)) for r in results_rows)
+    correct_sc = sum(int(r.get("correct_sc16", 0)) for r in results_rows)
+    correct_best = sum(int(r.get("correct_best16", 0)) for r in results_rows)
+    correct_qubo = sum(int(r.get("correct_qubo", 0)) for r in results_rows)
+    failed = sum(1 for r in results_rows if r.get("error"))
+    total = sum(1 for r in results_rows if not r.get("error"))
+    acc_g = (correct_greedy / total) if total else 0.0
+    acc_c = (correct_cot / total) if total else 0.0
+    acc_sc = (correct_sc / total) if total else 0.0
+    acc_bo = (correct_best / total) if total else 0.0
+    acc_q = (correct_qubo / total) if total else 0.0
+    ci = {
+        "greedy": binomial_ci(correct_greedy, total),
+        "cot": binomial_ci(correct_cot, total),
+        "sc16": binomial_ci(correct_sc, total),
+        "best16": binomial_ci(correct_best, total),
+        "qubo": binomial_ci(correct_qubo, total),
+    }
+    return {
+        "benchmark": benchmark_name,
+        "accuracy": {
+            "greedy": acc_g,
+            "cot": acc_c,
+            "sc16": acc_sc,
+            "best16": acc_bo,
+            "qubo": acc_q,
+        },
+        "ci95": {
+            k: {"rate": v[0], "low": v[1], "high": v[2]} for k, v in ci.items()
+        },
+        "num_samples": total,
+        "failed_samples": failed,
+        "abs_gain_vs_greedy": acc_q - acc_g,
+        "abs_gain_vs_sc16": acc_q - acc_sc,
+        "abs_gain_vs_best16": acc_q - acc_bo,
+        "cot_gain_over_greedy": acc_c - acc_g,
+        "rows": results_rows,
+    }
+
+
 def run_benchmark_on_gpu(
     gpu_id: int,
     benchmark_name: str,
@@ -338,11 +401,10 @@ def run_benchmark_on_gpu(
     batch_size: int,
     use_vllm: bool,
     device: str | None,
+    question_indices: list[int] | None = None,
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    worker_device = mask_worker_gpu(gpu_id)
     set_seed(seed)
-
-    worker_device = "cuda:0"
 
     runner = BenchmarkRunner(config_path)
     if subset_size is not None:
@@ -365,23 +427,22 @@ def run_benchmark_on_gpu(
 
     task_type = TASK_TYPE.get(benchmark_name, "math")
     questions, gold_answers = runner.load_benchmark(benchmark_name)
+    if question_indices is not None:
+        indexed = [(i, questions[i], gold_answers[i]) for i in question_indices if 0 <= i < len(questions)]
+    else:
+        indexed = [(i, q, g) for i, (q, g) in enumerate(zip(questions, gold_answers))]
 
     results_rows = []
-    correct_greedy = 0
-    correct_cot = 0
-    correct_sc = 0
-    correct_best = 0
-    correct_qubo = 0
-    total = 0
-    failed = 0
     is_mcq = benchmark_name in IS_MCQ
 
     if use_batch and batch_size > 1 and torch.cuda.is_available():
         batch_greedy_fn = make_batch_greedy(inference)
         batch_cot_fn = make_batch_cot(inference)
-        for i in range(0, len(questions), batch_size):
-            batch_q = questions[i:i + batch_size]
-            batch_gold = gold_answers[i:i + batch_size]
+        for i in range(0, len(indexed), batch_size):
+            batch = indexed[i:i + batch_size]
+            batch_q = [q for _, q, _ in batch]
+            batch_gold = [g for _, _, g in batch]
+            batch_ids = [idx for idx, _, _ in batch]
             try:
                 t0 = time.time()
                 preds_g = batch_greedy_fn(batch_q)
@@ -408,16 +469,10 @@ def run_benchmark_on_gpu(
                     c_sc = int(is_correct(pred_sc, gold, benchmark_name))
                     c_bo = int(is_correct(pred_bo, gold, benchmark_name))
                     c_q = int(is_correct(pred_qubo_n, gold, benchmark_name))
-                    correct_greedy += c_g
-                    correct_cot += c_c
-                    correct_sc += c_sc
-                    correct_best += c_bo
-                    correct_qubo += c_q
-                    total += 1
                     results_rows.append(
                         {
                             "benchmark": benchmark_name,
-                            "id": i + j,
+                            "id": batch_ids[j],
                             "question": q,
                             "gold": gold,
                             "pred_greedy": pred_g_n,
@@ -437,11 +492,10 @@ def run_benchmark_on_gpu(
                         }
                     )
             except Exception as e:
-                failed += len(batch_q)
                 for j in range(len(batch_q)):
                     results_rows.append({
                         "benchmark": benchmark_name,
-                        "id": i + j,
+                        "id": batch_ids[j],
                         "question": batch_q[j],
                         "gold": batch_gold[j],
                         "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
@@ -450,7 +504,7 @@ def run_benchmark_on_gpu(
                         "error": str(e),
                     })
     else:
-        for idx, (q, gold) in enumerate(zip(questions, gold_answers)):
+        for orig_idx, q, gold in indexed:
             try:
                 t0 = time.time()
                 pred_greedy = baseline_greedy(inference, q)
@@ -476,16 +530,10 @@ def run_benchmark_on_gpu(
                 c_sc = int(is_correct(pred_sc, gold, benchmark_name))
                 c_bo = int(is_correct(pred_bo, gold, benchmark_name))
                 c_q = int(is_correct(pred_q_n, gold, benchmark_name))
-                correct_greedy += c_g
-                correct_cot += c_c
-                correct_sc += c_sc
-                correct_best += c_bo
-                correct_qubo += c_q
-                total += 1
                 results_rows.append(
                     {
                         "benchmark": benchmark_name,
-                        "id": idx,
+                        "id": orig_idx,
                         "question": q,
                         "gold": gold,
                         "pred_greedy": pred_g_n,
@@ -505,63 +553,47 @@ def run_benchmark_on_gpu(
                     }
                 )
             except Exception as e:
-                failed += 1
                 results_rows.append({
-                    "benchmark": benchmark_name, "id": idx, "question": q, "gold": gold,
+                    "benchmark": benchmark_name, "id": orig_idx, "question": q, "gold": gold,
                     "pred_greedy": "", "pred_cot": "", "pred_qubo": "",
                     "correct_greedy": 0, "correct_cot": 0, "correct_qubo": 0,
                     "runtime_greedy_s": 0.0, "runtime_cot_s": 0.0, "runtime_qubo_s": 0.0,
                     "error": str(e),
                 })
 
-    acc_g = (correct_greedy / total) if total else 0.0
-    acc_c = (correct_cot / total) if total else 0.0
-    acc_sc = (correct_sc / total) if total else 0.0
-    acc_bo = (correct_best / total) if total else 0.0
-    acc_q = (correct_qubo / total) if total else 0.0
-    ci = {
-        "greedy": binomial_ci(correct_greedy, total),
-        "cot": binomial_ci(correct_cot, total),
-        "sc16": binomial_ci(correct_sc, total),
-        "best16": binomial_ci(correct_best, total),
-        "qubo": binomial_ci(correct_qubo, total),
-    }
-
-    return {
-        "benchmark": benchmark_name,
-        "accuracy": {
-            "greedy": acc_g,
-            "cot": acc_c,
-            "sc16": acc_sc,
-            "best16": acc_bo,
-            "qubo": acc_q,
-        },
-        "ci95": {
-            k: {"rate": v[0], "low": v[1], "high": v[2]} for k, v in ci.items()
-        },
-        "num_samples": total,
-        "failed_samples": failed,
-        "abs_gain_vs_greedy": acc_q - acc_g,
-        "abs_gain_vs_sc16": acc_q - acc_sc,
-        "abs_gain_vs_best16": acc_q - acc_bo,
-        "cot_gain_over_greedy": acc_c - acc_g,
-        "rows": results_rows,
-    }
+    return _summarize_rows(benchmark_name, results_rows)
 
 
 def main():
     args = parse_args()
     requested_device = args.device
-    if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
-        selected_device = "cuda:0"
-    else:
-        selected_device = requested_device
     set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    runner = BenchmarkRunner()
-    selected_device = str(resolve_device(selected_device or runner.config.get("evaluation", {}).get("device")))
+    runner = BenchmarkRunner(args.config)
+    hw_cfg = runner.config.get("hardware") or {}
+    visible_gpus = list_visible_gpu_ids()
+    num_visible = len(visible_gpus)
+
+    # Auto multi-GPU on A6000 fleets unless user pins --device or passes --no-multi-gpu.
+    if args.no_multi_gpu:
+        use_multi_gpu = False
+    elif args.multi_gpu:
+        use_multi_gpu = num_visible > 1
+    elif requested_device and str(requested_device).startswith("cuda:"):
+        use_multi_gpu = False
+    else:
+        use_multi_gpu = bool(hw_cfg.get("multi_gpu", True)) and num_visible > 1
+
+    if requested_device and requested_device.startswith("cuda:") and not use_multi_gpu:
+        selected_device = "cuda:0"
+    else:
+        selected_device = requested_device
+    selected_device = str(
+        resolve_device(selected_device or runner.config.get("evaluation", {}).get("device"))
+    )
+
     if args.subset_size is not None:
         runner.subset_size = args.subset_size
     if args.full:
@@ -573,14 +605,21 @@ def main():
         raise ValueError(f"Unknown benchmark(s): {unknown}. Allowed: {runner.benchmarks}")
 
     use_batch = not args.no_batch and selected_device.startswith("cuda") and torch.cuda.is_available()
-    # Use smaller default batch size (4) to prevent OOM errors; can be overridden with --batch-size
-    batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 4)
+    batch_size = args.batch_size or runner.config.get("evaluation", {}).get("batch_size", 16)
 
-    if requested_device and requested_device.startswith("cuda:") and not args.multi_gpu:
+    if requested_device and requested_device.startswith("cuda:") and not use_multi_gpu:
         print(f"Benchmark device: {requested_device} -> visible as {selected_device}")
     else:
         print(f"Benchmark device: {selected_device}")
-    print(f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {torch.cuda.device_count()}")
+    print(
+        f"CUDA available: {torch.cuda.is_available()} | visible GPUs: {num_visible} | "
+        f"multi_gpu={use_multi_gpu}"
+    )
+    if hw_cfg:
+        print(
+            f"Hardware target: {hw_cfg.get('gpu', '?')} "
+            f"{hw_cfg.get('vram_gb', '?')}GB dtype={hw_cfg.get('dtype', '?')}"
+        )
 
     if args.wandb_project:
         try:
@@ -596,66 +635,100 @@ def main():
                     "use_batch": use_batch,
                     "use_vllm": args.use_vllm,
                     "seed": args.seed,
+                    "multi_gpu": use_multi_gpu,
+                    "hardware": hw_cfg,
                 },
             )
         except ImportError:
             print("  WARNING: wandb not installed. Install with `pip install wandb`.")
             args.wandb_project = None
 
-    num_gpus = torch.cuda.device_count() if args.multi_gpu else 0
+    num_gpus = num_visible if use_multi_gpu else 0
     summary = {}
     all_rows = []
 
-    if num_gpus > 1 and len(benchmark_list) > 1:
-        print(f"  Distributing {len(benchmark_list)} benchmarks across {num_gpus} GPUs...")
-        chunk_size = max(1, len(benchmark_list) // num_gpus)
-        gpu_assignments = {}
-        for i, b in enumerate(benchmark_list):
-            gpu_id = i % num_gpus
-            gpu_assignments.setdefault(gpu_id, []).append(b)
-
+    if num_gpus > 1:
+        print(f"  Multi-GPU job sharding across {num_gpus} GPUs (one model replica per GPU)...")
+        futures = []
         with ProcessPoolExecutor(max_workers=num_gpus) as executor:
-            futures = []
-            for gpu_id, benches in gpu_assignments.items():
-                for b in benches:
+            if len(benchmark_list) > 1:
+                # One (or more) full benchmarks per GPU.
+                for i, b in enumerate(benchmark_list):
+                    gpu_id = visible_gpus[i % num_gpus]
                     futures.append(executor.submit(
                         run_benchmark_on_gpu, gpu_id, b,
-                        "config/config.yaml", args.seed,
+                        args.config, args.seed,
                         runner.subset_size, runner.full_eval,
                         use_batch, batch_size, args.use_vllm, args.device,
+                        None,
+                    ))
+            else:
+                # Single benchmark: shard questions across GPUs.
+                b = benchmark_list[0]
+                questions, _ = runner.load_benchmark(b)
+                shards = shard_indices(len(questions), num_gpus)
+                print(
+                    f"  Sharding {len(questions)} questions from '{b}' "
+                    f"across {num_gpus} GPUs..."
+                )
+                for gpu_id, indices in zip(visible_gpus, shards):
+                    if not indices:
+                        continue
+                    futures.append(executor.submit(
+                        run_benchmark_on_gpu, gpu_id, b,
+                        args.config, args.seed,
+                        runner.subset_size, runner.full_eval,
+                        use_batch, batch_size, args.use_vllm, args.device,
+                        indices,
                     ))
 
+            shard_rows_by_bench: dict[str, list] = {}
             for future in tqdm(as_completed(futures), total=len(futures), desc="Multi-GPU"):
                 result = future.result()
-                summary[result["benchmark"]] = {k: v for k, v in result.items() if k != "rows"}
-                all_rows.extend(result["rows"])
+                bname = result["benchmark"]
+                shard_rows_by_bench.setdefault(bname, []).extend(result["rows"])
                 a = result["accuracy"]
-                print(f"  [{result['benchmark']}] GPU | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%}")
+                print(
+                    f"  [{bname}] shard done | Greedy: {a['greedy']:.2%} | "
+                    f"CoT: {a['cot']:.2%} | QUBO: {a['qubo']:.2%} | n={result['num_samples']}"
+                )
+
+        for bname, rows in shard_rows_by_bench.items():
+            rows.sort(key=lambda r: int(r.get("id", 0)))
+            merged = _summarize_rows(bname, rows)
+            summary[bname] = {k: v for k, v in merged.items() if k != "rows"}
+            all_rows.extend(merged["rows"])
+            a = merged["accuracy"]
+            print(
+                f"  [{bname}] MERGED | Greedy: {a['greedy']:.2%} | CoT: {a['cot']:.2%} | "
+                f"QUBO: {a['qubo']:.2%} | samples={merged['num_samples']}"
+            )
     else:
         print(f"\n{'='*70}")
         print("INITIALIZATION")
         print(f"{'='*70}")
         print("[1/6] Loading inference model...")
         sys.stdout.flush()
-        inference = InferencePipeline(device=selected_device, use_vllm=args.use_vllm)
+        inference = InferencePipeline(args.config, device=selected_device, use_vllm=args.use_vllm)
         runtime_device = str(inference.device)
         
         print("[2/6] Loading sampler (sharing model)...")
         sys.stdout.flush()
         sampler = DiverseSampler(
+            args.config,
             device=runtime_device,
             shared_model=inference.model,
             shared_tokenizer=inference.tokenizer,
         )
         print("[3/6] Loading verifier...")
         sys.stdout.flush()
-        verifier = ReasonVerifier(device=runtime_device)
+        verifier = ReasonVerifier(args.config, device=runtime_device)
         print("[4/6] Loading QUBO builder...")
         sys.stdout.flush()
-        qubo_builder = QUBOBuilder(device=runtime_device)
+        qubo_builder = QUBOBuilder(args.config, device=runtime_device)
         print("[5/6] Loading solver...")
         sys.stdout.flush()
-        solver = SimulatedAnnealingSolver(device=runtime_device)
+        solver = SimulatedAnnealingSolver(args.config, device=runtime_device)
         print("[6/6] Initialization complete!")
         print("")
 
@@ -822,7 +895,7 @@ def main():
         csv_file.close()
 
     json_path = os.path.join(args.output_dir, f"all_benchmarks_{timestamp}.json")
-    with open("config/config.yaml", encoding="utf-8") as f:
+    with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     summary_meta = {
         "timestamp": timestamp,
@@ -834,6 +907,8 @@ def main():
         "batch_size": batch_size,
         "use_vllm": args.use_vllm,
         "multi_gpu": num_gpus > 1,
+        "num_gpus": num_gpus if num_gpus > 1 else 1,
+        "hardware": cfg.get("hardware", {}),
         "results": summary,
     }
     write_summary_json(json_path, summary_meta)

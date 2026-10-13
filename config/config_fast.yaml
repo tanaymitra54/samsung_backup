@@ -1,3 +1,9 @@
+hardware:
+  gpu: "NVIDIA RTX A6000"
+  vram_gb: 80
+  multi_gpu: true
+  dtype: "bfloat16"
+
 model:
   name: "Qwen/Qwen2.5-3B-Instruct"
   cache_dir: "./cache/models"
@@ -8,7 +14,7 @@ model:
     dtype: "auto"
     quantization: "fp8"
     tensor_parallel_size: 1
-    gpu_memory_utilization: 0.9
+    gpu_memory_utilization: 0.85
 
 pipeline:
   num_answers: 4
@@ -69,7 +75,7 @@ solver:
 training:
   sft_epochs: 3
   learning_rate: 2e-5
-  batch_size: 8
+  batch_size: 16
   lora_rank: 16
   lora_alpha: 32
   lora_dropout: 0.05
@@ -96,7 +102,7 @@ evaluation:
     - "mmlu"
   subset_size: 50
   full_eval: false
-  batch_size: 4
+  batch_size: 16
   use_batched_inference: true
   score_with_gold: false
   report_ci: true

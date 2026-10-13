@@ -22,6 +22,7 @@ from evaluation.answer_utils import (
     extract_predicted_answer,
     is_correct_prediction,
 )
+from pipeline.device_utils import hf_device_map_value, resolve_device, resolve_torch_dtype
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.reasoning import run_reasoning_pipeline
@@ -102,12 +103,17 @@ class QUBOSFTTrainer:
 
         if not torch.cuda.is_available():
             raise RuntimeError("This pipeline run requires an NVIDIA GPU, and CUDA is not available.")
-        self.device = "cuda:0"
-        self.gpu_name = torch.cuda.get_device_name(0)
-        free_bytes, _ = torch.cuda.mem_get_info(0)
+        preferred = eval_cfg.get("device")
+        resolved = resolve_device(preferred)
+        self.device = str(resolved)
+        device_index = resolved.index or 0
+        self.gpu_name = torch.cuda.get_device_name(device_index)
+        free_bytes, _ = torch.cuda.mem_get_info(device_index)
         self.free_gpu_mib = free_bytes / (1024 ** 2)
-        self.inference_4bit = self.free_gpu_mib < 12000
-        if self.inference_4bit:
+        # Only force 4-bit / tiny batches when VRAM is actually tight (<12 GiB free).
+        # A6000 80GB runs stay in bf16 with config batch sizes.
+        self.inference_4bit = self.free_gpu_mib < 12000 or bool(model_cfg.get("load_in_4bit", False))
+        if self.free_gpu_mib < 12000:
             self.batch_size = 1
             self.max_seq_length = min(self.max_seq_length, 1024)
         self.progress = PipelineProgress()
@@ -130,14 +136,16 @@ class QUBOSFTTrainer:
 
     def _build_model_and_tokenizer(self):
         bnb_config = self._build_bnb_config()
+        device = resolve_device(self.device)
         model_kwargs = {
             "cache_dir": self.cache_dir,
-            "device_map": "auto" if str(self.device).startswith("cuda") else None,
-            "torch_dtype": torch.float16 if str(self.device).startswith("cuda") else torch.float32,
+            "device_map": hf_device_map_value(device) if device.type == "cuda" else None,
+            "torch_dtype": resolve_torch_dtype(self.config) if device.type == "cuda" else torch.float32,
+            "low_cpu_mem_usage": True,
         }
         if bnb_config:
             model_kwargs["quantization_config"] = bnb_config
-        if self.attn_implementation and str(self.device).startswith("cuda"):
+        if self.attn_implementation and device.type == "cuda":
             model_kwargs["attn_implementation"] = self.attn_implementation
 
         model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)

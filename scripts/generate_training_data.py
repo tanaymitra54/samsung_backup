@@ -58,7 +58,7 @@ from pipeline.sampling import DiverseSampler
 from pipeline.verifier import ReasonVerifier
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.answer_groups import pick_winning_group
-from pipeline.device_utils import resolve_device
+from pipeline.device_utils import hf_device_map_value, resolve_device, resolve_torch_dtype
 from pipeline.preference_labels import chain_matches_gold
 from pipeline.selection import select_best_reasoning
 from pipeline.solver import SimulatedAnnealingSolver
@@ -171,35 +171,38 @@ def load_model_bfloat16(config: dict, device: str) -> tuple:
 
     target_device = resolve_device(device)
     use_cuda = target_device.type == "cuda"
+    dtype = resolve_torch_dtype({"hardware": {"dtype": "bfloat16"}, "model": model_cfg})
     if use_cuda:
         device_index = target_device.index or 0
         torch.cuda.set_device(device_index)
         torch.cuda.reset_peak_memory_stats()
     else:
         target_device = torch.device("cpu")
+        dtype = torch.float32
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        cache_dir=model_cfg.get("cache_dir"),
-        torch_dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-    )
+    model_kwargs = {
+        "cache_dir": model_cfg.get("cache_dir"),
+        "torch_dtype": dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if use_cuda:
+        model_kwargs["device_map"] = hf_device_map_value(target_device)
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
 
     if use_cuda:
-        model = model.to(target_device)
         torch.cuda.synchronize()
-
         allocated = torch.cuda.memory_allocated() / 1e9
         reserved = torch.cuda.memory_reserved() / 1e9
         peak = torch.cuda.max_memory_allocated() / 1e9
-
         param_gb = sum(p.numel() * p.element_size() for p in model.parameters()) / 1e9
         print(
-            f"[Model] Loaded on {target_device}. "
+            f"[Model] Loaded on {target_device} (device_map pinned). "
             f"allocated={allocated:.2f} GB, reserved={reserved:.2f} GB, "
             f"peak={peak:.2f} GB, params={param_gb:.2f} GB"
         )
     else:
+        model = model.to(target_device)
         print("[Model] Loaded on CPU.")
 
     model.eval()

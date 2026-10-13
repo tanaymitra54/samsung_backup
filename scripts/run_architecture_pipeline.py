@@ -15,15 +15,18 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import torch
 import yaml
 
 from evaluation import BenchmarkRunner
 from evaluation.answer_utils import extract_gsm8k_gold
 from pipeline.budget_table import BudgetTableWriter, empty_error_row
+from pipeline.device_utils import list_visible_gpu_ids, mask_worker_gpu, shard_indices
 from pipeline.inference import InferencePipeline
 from pipeline.qubo_builder import QUBOBuilder
 from pipeline.reasoning import run_reasoning_pipeline
@@ -63,7 +66,36 @@ def parse_args():
         action="store_true",
         help="Only run Stage A (base budget table).",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Pin eval/trace workers to one GPU (disables auto multi-GPU).",
+    )
+    parser.add_argument(
+        "--multi-gpu",
+        action="store_true",
+        help="Force multi-GPU question sharding for eval/trace collection.",
+    )
+    parser.add_argument(
+        "--no-multi-gpu",
+        action="store_true",
+        help="Force single-GPU mode even when multiple GPUs are visible.",
+    )
     return parser.parse_args()
+
+
+def _should_use_multi_gpu(args, config: dict) -> tuple[bool, list[int]]:
+    gpu_ids = list_visible_gpu_ids()
+    hw = config.get("hardware") or {}
+    if args.no_multi_gpu:
+        return False, gpu_ids[:1] if gpu_ids else []
+    if args.device and str(args.device).startswith("cuda:"):
+        # Parent keeps all GPUs visible; workers will mask. Use single logical path.
+        return False, gpu_ids
+    if args.multi_gpu:
+        return len(gpu_ids) > 1, gpu_ids
+    return bool(hw.get("multi_gpu", True)) and len(gpu_ids) > 1, gpu_ids
 
 
 def _write_stage(path: Path, payload: dict) -> None:

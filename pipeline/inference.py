@@ -7,7 +7,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from pipeline.answer_groups import keep_one_answer_group
-from pipeline.device_utils import candidate_cuda_devices, resolve_device
+from pipeline.device_utils import (
+    candidate_cuda_devices,
+    hf_device_map_value,
+    resolve_device,
+    resolve_torch_dtype,
+)
 
 
 def compose_final_prompt(question: str, reasons: list[str], subset_size: int = 6) -> str:
@@ -79,22 +84,24 @@ class InferencePipeline:
             "low_cpu_mem_usage": True,
         }
         if self.device.type == "cuda":
-            model_kwargs["device_map"] = "auto"
+            # Pin to one GPU — never use device_map="auto" (spans all visible GPUs).
+            model_kwargs["device_map"] = hf_device_map_value(self.device)
+            dtype = resolve_torch_dtype(self.config)
             if load_in_4bit:
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=getattr(
-                        torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                        torch, model_cfg.get("bnb_4bit_compute_dtype", "bfloat16")
                     ),
                     bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
                     bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
                 )
                 model_kwargs["quantization_config"] = bnb_config
                 model_kwargs["torch_dtype"] = getattr(
-                    torch, model_cfg.get("bnb_4bit_compute_dtype", "float16")
+                    torch, model_cfg.get("bnb_4bit_compute_dtype", "bfloat16")
                 )
             else:
-                model_kwargs["torch_dtype"] = torch.float16
+                model_kwargs["torch_dtype"] = dtype
             attn_impl = model_cfg.get("attn_implementation")
             if attn_impl:
                 model_kwargs["attn_implementation"] = attn_impl
