@@ -203,9 +203,9 @@ classDiagram
       +perturb_prompt()
     }
     class ReasonVerifier {
-      +score_batch(samples)
-      +verify_math()
-      +verify_commonsense()
+      +score_batch(samples, task_type)
+      +_nli_entailment(pairs)
+      +_weights_for(task_type)
     }
     class QUBOBuilder {
       +build_qubo(samples)
@@ -312,8 +312,9 @@ stateDiagram-v2
 ### `pipeline/verifier.py` - ReasonVerifier
 **In short:** Grade each answer. Math answers get checked for arithmetic consistency; commonsense answers get checked via NLI.
 
-- **Math mode:** Extracts numbers and operations via regex `(\d+\.?\d*)\s*([+\-*/])\s*(\d+\.?\d*)`, computes results, checks if consecutive computations agree
-- **Commonsense mode:** Uses `cross-encoder/nli-deberta-v3-base` to measure if the reason entails the answer
+- **Per-sample signals fused:** self-consistency (SC), NLI entailment, sequence confidence, and arithmetic consistency — combined via per-task weights (`math` vs `commonsense`, see `verifier.weights`)
+- **Math mode:** `arithmetic_consistency` parses explicit `a op b = c` equations and scores the fraction that are arithmetically correct
+- **Commonsense mode:** `cross-encoder/nli-deberta-v3-base` measures whether the reason entails the answer
 - **Tradeoff:** heuristics are fast but not as accurate as symbolic proof checking
 
 ### `pipeline/qubo_builder.py` - QUBOBuilder
